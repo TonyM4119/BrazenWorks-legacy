@@ -33,6 +33,13 @@ dimension edits are all "change the list, replay". Geometry goes through the
 (`cargo test`, no C++ needed). Planned here as well: the sketch constraint
 solver, the document file format, and CAM toolpath logic.
 
+**Sketch solver.** `crates/model_core/src/sketch/solver_adapter.rs` wraps the
+2D constraint solver (MitCad's `mitcad-solver`, MIT, pinned to a release tag)
+behind our own types (`ConstraintSolver`, `Rule`, `PointRef`…). It is the only
+file that names the library; its tests pin the behaviour we rely on, so a
+solver update that changes it fails CI. Updates arrive as pull requests from
+`.github/workflows/update-solver.yml`.
+
 **`src/bridge` (C++ ⇄ Rust).** `ffi.rs` declares the bridge with
 [CXX](https://cxx.rs): C++ geometry functions the Rust side calls (`geom_*`)
 and the Rust timeline API the app calls (`timeline_*`). `GeometryBridge.cpp`

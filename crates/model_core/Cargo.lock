@@ -161,11 +161,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "mitcad-solver"
+version = "0.74.0"
+source = "git+https://github.com/mitcad/Mitcad?tag=v0.74.0#2fb7d7587be843cfc0864eaa1c18c373287bdc48"
+dependencies = [
+ "mitcad-vec3",
+]
+
+[[package]]
+name = "mitcad-vec3"
+version = "0.74.0"
+source = "git+https://github.com/mitcad/Mitcad?tag=v0.74.0#2fb7d7587be843cfc0864eaa1c18c373287bdc48"
+
+[[package]]
 name = "model_core"
 version = "0.1.0"
 dependencies = [
  "cxx",
  "cxx-build",
+ "mitcad-solver",
 ]
 
 [[package]]

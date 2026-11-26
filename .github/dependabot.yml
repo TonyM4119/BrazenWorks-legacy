@@ -1,0 +1,27 @@
+# Weekly pull requests for outdated dependencies. CI runs on each.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /crates/model_core
+    schedule:
+      interval: weekly
+      day: monday
+    ignore:
+      # Updated by .github/workflows/update-solver.yml, which follows MitCad's
+      # release tags rather than individual commits.
+      - dependency-name: mitcad-solver
+      - dependency-name: mitcad-vec3
+    groups:
+      rust-dependencies:
+        patterns: ["*"]
+    labels: [dependencies]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      github-actions:
+        patterns: ["*"]
+    labels: [dependencies]

@@ -1,0 +1,95 @@
+# Weekly: if MitCad has published a newer release, open a pull request that
+# bumps the solver pin in crates/model_core/Cargo.toml, then start CI on it.
+# Nothing reaches main until someone merges the pull request.
+name: Update MitCad solver
+
+on:
+  schedule:
+    - cron: "23 13 * * 1"   # Mondays, 13:23 UTC
+  workflow_dispatch:         # or run it any time from the Actions tab
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write             # to start CI on the new branch (see last step)
+
+jobs:
+  bump:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare pinned and latest release
+        id: versions
+        run: |
+          current=$(grep -oP 'mitcad-solver = \{[^}]*tag = "\K[^"]+' crates/model_core/Cargo.toml)
+          latest=$(git ls-remote --tags --refs https://github.com/mitcad/Mitcad 'v*' \
+                   | awk -F/ '{print $3}' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          echo "Pinned: $current, latest MitCad release: $latest"
+          if [ -z "$latest" ] || [ "$latest" = "$current" ] || \
+             [ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1)" = "$current" ]; then
+            echo "update=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "update=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if a pull request for this release already exists
+        if: steps.versions.outputs.update == 'true'
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="deps/mitcad-solver-${{ steps.versions.outputs.latest }}"
+          if git ls-remote --exit-code --heads origin "$branch" >/dev/null; then
+            echo "Branch $branch already exists; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.versions.outputs.update == 'true' && steps.existing.outputs.skip != 'true'
+
+      - name: Bump the pin and run the solver tests
+        if: steps.versions.outputs.update == 'true' && steps.existing.outputs.skip != 'true'
+        id: bump
+        run: |
+          sed -i 's/\(mitcad-solver = {[^}]*tag = "\)[^"]*"/\1${{ steps.versions.outputs.latest }}"/' \
+            crates/model_core/Cargo.toml
+          cargo update --manifest-path crates/model_core/Cargo.toml -p mitcad-solver -p mitcad-vec3
+          # Pure-Rust tests (no Qt/OCCT needed): includes the solver behaviour tests.
+          if cargo test --manifest-path crates/model_core/Cargo.toml 2>&1 | tee test.log; then
+            echo "tests=passed" >> "$GITHUB_OUTPUT"
+          else
+            echo "tests=failed" >> "$GITHUB_OUTPUT"
+          fi
+          rm -f test.log
+
+      - name: Open pull request
+        if: steps.versions.outputs.update == 'true' && steps.existing.outputs.skip != 'true'
+        id: pr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: deps/mitcad-solver-${{ steps.versions.outputs.latest }}
+          commit-message: "Update MitCad solver ${{ steps.versions.outputs.current }} → ${{ steps.versions.outputs.latest }}"
+          title: "Update MitCad solver ${{ steps.versions.outputs.current }} → ${{ steps.versions.outputs.latest }}"
+          labels: dependencies
+          body: |
+            MitCad published **${{ steps.versions.outputs.latest }}**; we are on **${{ steps.versions.outputs.current }}**.
+
+            - Release notes: https://github.com/mitcad/Mitcad/releases/tag/${{ steps.versions.outputs.latest }}
+            - Solver changes: https://github.com/mitcad/Mitcad/compare/${{ steps.versions.outputs.current }}...${{ steps.versions.outputs.latest }}
+
+            Solver behaviour tests (`cargo test`): **${{ steps.bump.outputs.tests }}**.
+            Full CI (Linux + Windows) runs on this branch; merge when it's green.
+            If anything fails, the fix belongs in `crates/model_core/src/sketch/solver_adapter.rs`.
+
+            _Opened automatically by `.github/workflows/update-solver.yml`._
+
+      # Pull requests opened with the workflow token don't trigger other
+      # workflows, but workflow_dispatch does, so start CI explicitly.
+      - name: Start CI on the update branch
+        if: steps.pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --ref "deps/mitcad-solver-${{ steps.versions.outputs.latest }}"

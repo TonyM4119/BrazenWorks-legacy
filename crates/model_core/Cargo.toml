@@ -19,6 +19,10 @@ ffi = ["dep:cxx", "dep:cxx-build"]
 
 [dependencies]
 cxx = { version = "1.0", optional = true }
+# 2D sketch constraint solver from MitCad (MIT). Only src/sketch/solver_adapter.rs
+# uses it. Pinned to a release tag; .github/workflows/update-solver.yml opens a
+# pull request when MitCad publishes a newer release.
+mitcad-solver = { git = "https://github.com/mitcad/Mitcad", tag = "v0.74.0" }
 
 [build-dependencies]
 cxx-build = { version = "1.0", optional = true }

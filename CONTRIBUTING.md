@@ -18,7 +18,8 @@ cargo clippy --manifest-path crates/model_core/Cargo.toml
 | You're adding… | Put it in |
 |---|---|
 | A new modeling operation (OCCT call) | `src/geometry/Kernel.{h,cpp}`, then expose it in `src/bridge` |
-| Feature/timeline/document logic, sketch solver, CAM toolpath logic | `crates/model_core` (Rust) |
+| Feature/timeline/document logic, sketch model, CAM toolpath logic | `crates/model_core` (Rust) |
+| Anything that calls the constraint solver library | `crates/model_core/src/sketch/solver_adapter.rs` only |
 | UI: panels, dialogs, ribbon tools | `src/app` (C++/Qt) |
 | Colours, sizes, the stylesheet | `src/app/Theme.{h,cpp}`: never hard-code a colour in a widget |
 | An icon | `resources/icons/<name>.svg`, 24×24, stroke-only, using `currentColor` (see existing icons) |
@@ -58,6 +59,14 @@ BrazenWorks offers a familiar *workflow*. It does not copy Autodesk's product.
   file names, UI text or marketing. A factual comparison in docs ("works like
   Fusion's timeline") is fine.
 - Draw our own icons. Generic CAD names for tools ("Extrude", "Fillet") are fine.
+
+## Dependency updates
+
+- **Solver:** every Monday, `update-solver.yml` checks for a new MitCad release and
+  opens a pull request bumping the pin, with CI started on it. Merge when green.
+  Run it by hand from the Actions tab ("Update MitCad solver" → Run workflow).
+- **Everything else:** Dependabot opens weekly pull requests for Rust crates and
+  GitHub Actions.
 
 ## Commit messages
 

@@ -6,6 +6,7 @@
 //! the C++ geometry layer implements over the CXX bridge (`ffi` feature).
 
 pub mod kernel;
+pub mod sketch;
 pub mod timeline;
 
 #[cfg(feature = "ffi")]
