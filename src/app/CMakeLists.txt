@@ -40,7 +40,8 @@ target_link_libraries(app PRIVATE
   TKService TKV3d TKOpenGl)
 
 if(WIN32)
-  target_link_libraries(app PRIVATE opengl32)  # wglGetCurrentDC in Viewport.cpp
+  target_sources(app PRIVATE GlWindowHandle_win.cpp)
+  target_link_libraries(app PRIVATE opengl32)  # wglGetCurrentDC
 endif()
 
 set_target_properties(app PROPERTIES

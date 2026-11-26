@@ -23,7 +23,7 @@
 #include <QWindow>
 
 #ifdef _WIN32
-#include <windows.h>
+void* currentGlWindowHandle();  // GlWindowHandle_win.cpp
 #endif
 #include <QSurfaceFormat>
 #include <QWheelEvent>
@@ -88,7 +88,7 @@ Vec2i toPoint(const QPointF& p, qreal dpr) {
 // device context; elsewhere the top-level window's handle.
 Aspect_Drawable Viewport::nativeHandle() const {
 #ifdef _WIN32
-  return (Aspect_Drawable)WindowFromDC(wglGetCurrentDC());
+  return (Aspect_Drawable)currentGlWindowHandle();
 #else
   return (Aspect_Drawable)window()->winId();
 #endif
