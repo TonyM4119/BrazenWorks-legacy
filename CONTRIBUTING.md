@@ -20,6 +20,8 @@ cargo clippy --manifest-path crates/model_core/Cargo.toml
 | A new modeling operation (OCCT call) | `src/geometry/Kernel.{h,cpp}`, then expose it in `src/bridge` |
 | Feature/timeline/document logic, sketch solver, CAM toolpath logic | `crates/model_core` (Rust) |
 | UI: panels, dialogs, ribbon tools | `src/app` (C++/Qt) |
+| Colours, sizes, the stylesheet | `src/app/Theme.{h,cpp}`: never hard-code a colour in a widget |
+| An icon | `resources/icons/<name>.svg`, 24×24, stroke-only, using `currentColor` (see existing icons) |
 | Anything with the product name in it | **Nowhere.** Read it from `Branding.h` (C++) or `branding.json` |
 
 Rules of thumb:

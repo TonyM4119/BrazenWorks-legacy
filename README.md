@@ -91,7 +91,10 @@ cargo test --manifest-path crates/model_core/Cargo.toml
 | Orbit | Shift + middle-drag |
 | Zoom | Mouse wheel |
 | Select (window) | Left-drag |
-| Fit all | F6 |
+| Fit all | F6, or the nav bar at the bottom of the view |
+
+The nav bar also has a home view, orbit/pan/zoom modes for left-drag, display modes
+(shaded, shaded with edges, wireframe) and a grid toggle.
 
 ## Renaming the product
 

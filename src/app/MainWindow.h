@@ -4,54 +4,61 @@
 #include "model_core/src/ffi.rs.h"  // Rust timeline API (generated)
 
 #include <QMainWindow>
+#include <QPointer>
 
-class QComboBox;
-class QHBoxLayout;
-class QListWidget;
-class QTabBar;
+class CommandDialog;
+class DocumentBar;
+class FloatingPanel;
+class NavBar;
 class QTreeWidget;
+class Ribbon;
+class TimelineBar;
 class Viewport;
 
 // Fusion-style layout:
-//   ┌ workspace switcher │ tabs (SOLID, SURFACE…) / tool groups (CREATE ▾ …) ┐
-//   │ Browser (left dock) │            3D viewport + view cube               │
-//   └ timeline: ⏮ ◀ ▶ ⏭ [feature][feature]…                                 ┘
+//   document bar ─ logo/menu · Projects · document tab ········ help · account
+//   ribbon ─────── workspace │ tabs / tool groups (icons, group menus)
+//   viewport ───── 3D view with floating Browser, command dialog, nav bar, view cube
+//   timeline ───── ⏮ ◀ ▶ ⏭  [feature chips] ▌marker          status
 class MainWindow : public QMainWindow {
   Q_OBJECT
  public:
   explicit MainWindow(QWidget* parent = nullptr);
 
+ protected:
+  bool eventFilter(QObject* watched, QEvent* event) override;
+
  private:
-  enum class Workspace { Design, Manufacture };
-
-  QWidget* buildRibbon();
-  QWidget* buildTimelineBar();
-  void buildMenus();
+  void buildAppMenu();
   void buildBrowser();
+  void layoutOverlays();
 
-  void setWorkspace(Workspace ws);
-  void populateToolGroups();
+  void onTool(const QString& id);
+  void openBoxDialog();
+  void openFilletDialog();
+  void showDialog(CommandDialog* dialog);
+  void closeDialog();
+
   void loadDemoDocument();
-
   void rebuildModel(bool fit = false);
   void refreshTimeline();
   void refreshBrowser();
-  void stepMarker(int delta);
+  void setMarker(long marker);
 
-  void addBox();
-  void addFillet();
   void exportStep();
   void showAbout();
 
   rust::Box<model::Timeline> timeline_ = model::new_timeline();
   TopoDS_Shape body_;
+  QVector<std::size_t> failed_;
   QString documentName_ = QStringLiteral("Untitled");
-  Workspace workspace_ = Workspace::Design;
 
+  DocumentBar* documentBar_ = nullptr;
+  Ribbon* ribbon_ = nullptr;
   Viewport* viewport_ = nullptr;
-  QComboBox* workspaceBox_ = nullptr;
-  QTabBar* tabs_ = nullptr;
-  QHBoxLayout* toolRow_ = nullptr;
+  TimelineBar* timelineBar_ = nullptr;
+  FloatingPanel* browserPanel_ = nullptr;
   QTreeWidget* browser_ = nullptr;
-  QListWidget* timelineList_ = nullptr;
+  NavBar* navBar_ = nullptr;
+  QPointer<CommandDialog> dialog_;
 };

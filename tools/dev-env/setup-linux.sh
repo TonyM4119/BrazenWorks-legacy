@@ -17,7 +17,7 @@ if [[ $SKIP_PACKAGES -eq 0 ]]; then
   step "System packages (apt)"
   sudo apt-get update
   sudo apt-get install -y build-essential cmake ninja-build git python3 \
-    qt6-base-dev libgl-dev libtbb-dev libfontconfig-dev \
+    qt6-base-dev qt6-svg-dev libgl-dev libtbb-dev libfontconfig-dev \
     libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev \
     libocct-visualization-dev libocct-data-exchange-dev libocct-ocaf-dev occt-misc
 

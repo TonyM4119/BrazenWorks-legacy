@@ -7,17 +7,41 @@ qt_add_executable(app
   MainWindow.cpp
   MainWindow.h
   Viewport.cpp
-  Viewport.h)
+  Viewport.h
+  Theme.cpp
+  Theme.h
+  Icons.cpp
+  Icons.h
+  widgets/CommandDialog.cpp
+  widgets/CommandDialog.h
+  widgets/DocumentBar.cpp
+  widgets/DocumentBar.h
+  widgets/FloatingPanel.cpp
+  widgets/FloatingPanel.h
+  widgets/NavBar.cpp
+  widgets/NavBar.h
+  widgets/Ribbon.cpp
+  widgets/Ribbon.h
+  widgets/TimelineBar.cpp
+  widgets/TimelineBar.h)
 
-qt_add_resources(app "theme"
+target_include_directories(app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+
+# Icons: every SVG in resources/icons, served as :/icons/<name>.svg
+file(GLOB APP_ICONS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/resources/icons/*.svg")
+qt_add_resources(app "icons"
   PREFIX "/"
   BASE "${CMAKE_SOURCE_DIR}/resources"
-  FILES "${CMAKE_SOURCE_DIR}/resources/theme/dark.qss")
+  FILES ${APP_ICONS})
 
 target_link_libraries(app PRIVATE
   model branding
-  Qt6::Widgets Qt6::OpenGLWidgets
+  Qt6::Widgets Qt6::OpenGLWidgets Qt6::Svg
   TKService TKV3d TKOpenGl)
+
+if(WIN32)
+  target_link_libraries(app PRIVATE opengl32)  # wglGetCurrentDC in Viewport.cpp
+endif()
 
 set_target_properties(app PROPERTIES
   OUTPUT_NAME "${BRAND_SLUG}"

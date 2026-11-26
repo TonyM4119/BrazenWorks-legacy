@@ -4,6 +4,7 @@
 #include <AIS_Shape.hxx>
 #include <AIS_ViewController.hxx>
 #include <AIS_ViewCube.hxx>
+#include <Aspect_Drawable.hxx>
 #include <TopoDS_Shape.hxx>
 #include <V3d_View.hxx>
 #include <V3d_Viewer.hxx>
@@ -19,8 +20,18 @@ class Viewport : public QOpenGLWidget, public AIS_ViewController {
   explicit Viewport(QWidget* parent = nullptr);
   ~Viewport() override;
 
+  enum class DragMode { Select, Orbit, Pan, Zoom };
+  enum class DisplayMode { ShadedWithEdges, Shaded, Wireframe };
+
   void showBody(const TopoDS_Shape& body);
+  void setBodyVisible(bool visible);
   void fitAll();
+  void homeView();  // isometric, fitted
+
+  // What a plain left-drag does (middle-drag pan / Shift+middle orbit always work).
+  void setDragMode(DragMode mode);
+  void setDisplayMode(DisplayMode mode);
+  void setGridVisible(bool visible);
 
   QSize minimumSizeHint() const override { return {200, 200}; }
 
@@ -39,11 +50,16 @@ class Viewport : public QOpenGLWidget, public AIS_ViewController {
 
  private:
   void setupMouseGestures();
+  Aspect_Drawable nativeHandle() const;
 
   Handle(V3d_Viewer) viewer_;
   Handle(V3d_View) view_;
   Handle(AIS_InteractiveContext) context_;
   Handle(AIS_ViewCube) viewCube_;
   Handle(AIS_Shape) body_;
-  bool fitPending_ = false;  // fit requested before the GL window existed
+  bool fitPending_ = false;
+  DragMode dragMode_ = DragMode::Select;
+  DisplayMode displayMode_ = DisplayMode::ShadedWithEdges;
+  bool bodyVisible_ = true;
+  void applyDisplayMode();  // fit requested before the GL window existed
 };

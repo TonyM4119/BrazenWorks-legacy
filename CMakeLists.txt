@@ -46,7 +46,7 @@ endif()
 message(STATUS "Open CASCADE ${OpenCASCADE_VERSION}: ${OpenCASCADE_INCLUDE_DIR}")
 
 if(APP_BUILD_GUI)
-  find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets OpenGLWidgets)
+  find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets OpenGLWidgets Svg)
 endif()
 
 # ---- Generated branding header ---------------------------------------------

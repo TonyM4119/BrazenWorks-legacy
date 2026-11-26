@@ -15,7 +15,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build qt6-base-dev libgl-dev libtbb-dev libfontconfig-dev \
+          sudo apt-get install -y build-essential cmake ninja-build qt6-base-dev qt6-svg-dev libgl-dev libtbb-dev libfontconfig-dev \
             libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev \
             libocct-visualization-dev libocct-data-exchange-dev libocct-ocaf-dev occt-misc
 

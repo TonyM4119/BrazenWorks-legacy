@@ -42,7 +42,10 @@ implements the C++ half. CMake runs Cargo, which generates
 **`src/app` (C++ / Qt 6).** The UI. `Viewport` renders an OCCT `V3d_View` into a
 `QOpenGLWidget` (the approach in OCCT's own Qt sample) and maps the mouse the
 CAD-standard way. `MainWindow` builds the workspace layout and calls the Rust
-timeline.
+timeline. Floating panels (browser, command dialogs, nav bar) are child
+widgets of the viewport: it is deliberately *not* a native window, so Qt can
+draw over the 3D view. All colours come from `Theme`, all icons from
+`resources/icons` via `Icons`, recoloured per state.
 
 ## Branding
 
