@@ -11,6 +11,8 @@
 
 #include <QOpenGLWidget>
 
+#include <functional>
+
 // The 3D canvas: an Open CASCADE V3d view rendered into a Qt OpenGL widget.
 // Mouse mapping follows the common CAD convention (Fusion-style):
 //   middle-drag = pan, Shift+middle-drag = orbit, wheel = zoom, left = select.
@@ -25,8 +27,8 @@ class Viewport : public QOpenGLWidget, public AIS_ViewController {
 
   void showBody(const TopoDS_Shape& body);
   void setBodyVisible(bool visible);
-  void fitAll();
-  void homeView();  // isometric, fitted
+  void fitAll(bool animate = false);
+  void homeView();  // isometric, fitted, animated
 
   // What a plain left-drag does (middle-drag pan / Shift+middle orbit always work).
   void setDragMode(DragMode mode);
@@ -50,6 +52,8 @@ class Viewport : public QOpenGLWidget, public AIS_ViewController {
 
  private:
   void setupMouseGestures();
+  // Glides the camera from where it is to where `applyTarget` puts it.
+  void animateCamera(const std::function<void()>& applyTarget);
   Aspect_Drawable nativeHandle() const;
 
   Handle(V3d_Viewer) viewer_;

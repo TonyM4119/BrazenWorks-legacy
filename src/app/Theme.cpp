@@ -63,7 +63,7 @@ QToolTip { background: {panel}; color: {text}; border: 1px solid {panelBorder}; 
 #RibbonTabs QTabBar::tab:hover:!selected { color: {text}; }
 #ToolGroup { border-right: 1px solid {panelBorder}; }
 #ToolButton { border: 1px solid transparent; border-radius: 6px; background: transparent; }
-#ToolButton:hover { background: {hover}; }
+/* #ToolButton hover is painted (and faded) by AnimatedToolButton */
 #ToolButton:pressed, #ToolButton:checked { border-color: {accent}; }
 #GroupButton { border: 0; background: transparent; color: {textMuted}; font-size: 10px; font-weight: 700;
                letter-spacing: 0.8px; padding: 2px 4px; }
@@ -107,7 +107,6 @@ QPushButton#PrimaryButton:hover { background: {accentHover}; }
 /* Navigation bar */
 #NavBar { background: {panel}; border: 1px solid {panelBorder}; border-radius: 8px; }
 #NavBar QToolButton { border: 0; border-radius: 6px; background: transparent; padding: 6px; }
-#NavBar QToolButton:hover { background: {hover}; }
 #NavBar QToolButton:checked { background: {selection}; }
 #NavSeparator { background: {panelBorder}; }
 

@@ -12,6 +12,8 @@ qt_add_executable(app
   Theme.h
   Icons.cpp
   Icons.h
+  widgets/Animations.cpp
+  widgets/Animations.h
   widgets/CommandDialog.cpp
   widgets/CommandDialog.h
   widgets/DocumentBar.cpp

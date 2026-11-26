@@ -31,13 +31,14 @@ class MainWindow : public QMainWindow {
  private:
   void buildAppMenu();
   void buildBrowser();
-  void layoutOverlays();
+  void layoutOverlays(bool animate = false);
 
   void onTool(const QString& id);
   void openBoxDialog();
   void openFilletDialog();
   void showDialog(CommandDialog* dialog);
   void closeDialog();
+  QPoint dialogPosition() const;
 
   void loadDemoDocument();
   void rebuildModel(bool fit = false);
