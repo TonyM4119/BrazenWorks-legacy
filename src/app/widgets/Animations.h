@@ -20,8 +20,12 @@ void fadeSlideIn(QWidget* panel, QPoint endPos, QPoint offset = {16, 0});
 // Fades a panel out, then calls `done` (typically deleteLater).
 void fadeOut(QWidget* panel, const std::function<void()>& done);
 
-// Animates a widget's geometry (e.g. a panel collapsing).
+// Animates a widget's geometry (e.g. a panel collapsing). A new call
+// replaces one still running, so only the latest target wins.
 void resize(QWidget* widget, const QRect& to);
+
+// Stops a running resize() on the widget (before setting geometry directly).
+void stopResize(QWidget* widget);
 
 }  // namespace anim
 

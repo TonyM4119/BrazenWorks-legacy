@@ -61,9 +61,19 @@ void fadeOut(QWidget* panel, const std::function<void()>& done) {
   opacity->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
+void stopResize(QWidget* widget) {
+  if (auto* running = widget->findChild<QPropertyAnimation*>("geometryAnimation", Qt::FindDirectChildrenOnly)) {
+    running->stop();
+    running->deleteLater();
+    running->setObjectName(QString());
+  }
+}
+
 void resize(QWidget* widget, const QRect& to) {
+  stopResize(widget);
   if (widget->geometry() == to) return;
   auto* a = new QPropertyAnimation(widget, "geometry", widget);
+  a->setObjectName("geometryAnimation");
   a->setDuration(kNormal);
   a->setEndValue(to);
   a->setEasingCurve(QEasingCurve::OutCubic);
