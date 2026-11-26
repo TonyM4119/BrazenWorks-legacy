@@ -13,11 +13,7 @@ FloatingPanel::FloatingPanel(const QString& title, QWidget* parent) : QFrame(par
   setObjectName("FloatingPanel");
   setAttribute(Qt::WA_StyledBackground);
 
-  auto* shadow = new QGraphicsDropShadowEffect(this);
-  shadow->setBlurRadius(18);
-  shadow->setOffset(0, 3);
-  shadow->setColor(QColor(0, 0, 0, 110));
-  setGraphicsEffect(shadow);
+  applyShadow();
 
   auto* outer = new QVBoxLayout(this);
   outer->setContentsMargins(0, 0, 0, 0);
@@ -55,6 +51,14 @@ FloatingPanel::FloatingPanel(const QString& title, QWidget* parent) : QFrame(par
   body_->setContentsMargins(4, 4, 4, 6);
   body_->setSpacing(0);
   outer->addWidget(bodyWidget, 1);
+}
+
+void FloatingPanel::applyShadow() {
+  auto* shadow = new QGraphicsDropShadowEffect(this);
+  shadow->setBlurRadius(18);
+  shadow->setOffset(0, 3);
+  shadow->setColor(QColor(0, 0, 0, 110));
+  setGraphicsEffect(shadow);
 }
 
 void FloatingPanel::setContent(QWidget* content) {

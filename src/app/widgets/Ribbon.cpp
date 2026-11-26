@@ -1,5 +1,6 @@
 #include "Ribbon.h"
 
+#include "Animations.h"
 #include "Icons.h"
 #include "Theme.h"
 
@@ -88,7 +89,7 @@ void Ribbon::rebuildTools() {
       const bool enabled = t.tip.isEmpty();
       const QString tip = enabled ? t.label : QString("%1\n%2").arg(t.label, t.tip);
 
-      auto* b = new QToolButton(box);
+      auto* b = new AnimatedToolButton(box);
       b->setObjectName("ToolButton");
       b->setIcon(icons::get(t.icon, theme::kIconSize));
       b->setIconSize(QSize(theme::kIconSize, theme::kIconSize));

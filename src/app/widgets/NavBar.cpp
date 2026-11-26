@@ -1,5 +1,6 @@
 #include "NavBar.h"
 
+#include "Animations.h"
 #include "Icons.h"
 #include "Theme.h"
 
@@ -71,7 +72,7 @@ NavBar::NavBar(QWidget* parent) : QFrame(parent) {
 }
 
 QToolButton* NavBar::addButton(const QString& icon, const QString& tip, bool checkable) {
-  auto* b = new QToolButton(this);
+  auto* b = new AnimatedToolButton(this);
   b->setIcon(icons::get(icon, 18));
   b->setIconSize(QSize(18, 18));
   b->setToolTip(tip);

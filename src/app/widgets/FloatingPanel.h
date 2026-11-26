@@ -20,6 +20,7 @@ class FloatingPanel : public QFrame {
   void setCollapsible(bool on);
   bool isCollapsed() const { return collapsed_; }
   void setCollapsed(bool collapsed);
+  void applyShadow();
 
  signals:
   void collapsedChanged(bool collapsed);

@@ -1,5 +1,6 @@
 #include "Viewport.h"
 
+#include <AIS_AnimationCamera.hxx>
 #include <AIS_MouseGesture.hxx>
 #include <Aspect_DisplayConnection.hxx>
 #include <Aspect_Grid.hxx>
@@ -13,6 +14,7 @@
 #include <OpenGl_GraphicDriver.hxx>
 #include <OpenGl_View.hxx>
 #include <OpenGl_Window.hxx>
+#include <Graphic3d_Camera.hxx>
 #include <Prs3d_Drawer.hxx>
 #include <Quantity_Color.hxx>
 #include <V3d_TypeOfOrientation.hxx>
@@ -122,11 +124,17 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   context_ = new AIS_InteractiveContext(viewer_);
   context_->SetDisplayMode(AIS_Shaded, false);
   context_->DefaultDrawer()->SetFaceBoundaryDraw(true);
+  // Rounder curved surfaces: finer tessellation than OCCT's defaults
+  // (chord deviation 0.1% of size, 20° angle).
+  constexpr double kDegree = 3.14159265358979323846 / 180.0;
+  context_->DefaultDrawer()->SetDeviationCoefficient(0.0003);
+  context_->DefaultDrawer()->SetDeviationAngle(4.0 * kDegree);
 
   viewCube_ = new AIS_ViewCube();
   viewCube_->SetViewAnimation(myViewAnimation);
   viewCube_->SetFixedAnimationLoop(false);
   viewCube_->SetAutoStartAnimation(true);
+  viewCube_->SetDuration(0.4);
   viewCube_->SetSize(55);
   // Match the dark theme instead of OCCT's default white cube.
   {
@@ -144,6 +152,9 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
 
   view_ = viewer_->CreateView();
   view_->SetImmediateUpdate(false);
+  // Smooth edges: 4x multisample anti-aliasing for shaded faces, edges and grid.
+  view_->ChangeRenderingParams().NbMsaaSamples = 4;
+  view_->ChangeRenderingParams().IsAntialiasingEnabled = true;
 
   setupMouseGestures();
 
@@ -232,8 +243,33 @@ void Viewport::setBodyVisible(bool visible) {
 }
 
 void Viewport::homeView() {
-  view_->SetProj(V3d_XposYnegZpos);
-  fitAll();
+  if (view_->Window().IsNull()) {
+    view_->SetProj(V3d_XposYnegZpos);
+    fitAll();
+    return;
+  }
+  animateCamera([this] {
+    view_->SetProj(V3d_XposYnegZpos);
+    view_->FitAll(0.1, false);
+  });
+}
+
+void Viewport::animateCamera(const std::function<void()>& applyTarget) {
+  Handle(Graphic3d_Camera) start = new Graphic3d_Camera();
+  start->Copy(view_->Camera());
+  applyTarget();  // moves the camera to the goal without drawing
+  Handle(Graphic3d_Camera) end = new Graphic3d_Camera();
+  end->Copy(view_->Camera());
+  view_->Camera()->Copy(start);
+
+  // AIS_ViewController plays myViewAnimation frame by frame in handleViewRedraw.
+  myViewAnimation->SetView(view_);
+  myViewAnimation->SetCameraStart(start);
+  myViewAnimation->SetCameraEnd(end);
+  myViewAnimation->SetOwnDuration(0.35);
+  myViewAnimation->StartTimer(0.0, 1.0, true, false);
+  view_->Invalidate();
+  update();
 }
 
 void Viewport::initializeGL() {
@@ -317,9 +353,13 @@ void Viewport::showBody(const TopoDS_Shape& body) {
   update();
 }
 
-void Viewport::fitAll() {
+void Viewport::fitAll(bool animate) {
   if (view_->Window().IsNull()) {  // not shown yet: fit once GL is ready
     fitPending_ = true;
+    return;
+  }
+  if (animate) {
+    animateCamera([this] { view_->FitAll(0.1, false); });
     return;
   }
   view_->FitAll(0.1, false);

@@ -16,6 +16,11 @@ int main(int argc, char* argv[]) {
   QApplication::setOrganizationDomain(branding::kDomain);
   QApplication::setDesktopFileName(branding::kAppId);
 
+  // Menus, combo boxes and tooltips fade/slide open instead of popping.
+  for (Qt::UIEffect e : {Qt::UI_AnimateMenu, Qt::UI_FadeMenu, Qt::UI_AnimateCombo, Qt::UI_AnimateTooltip,
+                         Qt::UI_FadeTooltip}) {
+    QApplication::setEffectEnabled(e, true);
+  }
   app.setStyle("Fusion");  // consistent base on every OS; the theme styles it
   app.setStyleSheet(theme::styleSheet());
 

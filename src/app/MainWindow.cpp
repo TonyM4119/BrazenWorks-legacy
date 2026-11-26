@@ -5,6 +5,7 @@
 #include "Kernel.h"
 #include "Theme.h"
 #include "Viewport.h"
+#include "widgets/Animations.h"
 #include "widgets/CommandDialog.h"
 #include "widgets/DocumentBar.h"
 #include "widgets/FloatingPanel.h"
@@ -23,6 +24,7 @@
 #include <QMenu>
 #include <QMessageBox>
 #include <QTreeWidget>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -137,7 +139,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   buildBrowser();
   navBar_ = new NavBar(viewport_);
   connect(navBar_, &NavBar::homeRequested, viewport_, &Viewport::homeView);
-  connect(navBar_, &NavBar::fitRequested, viewport_, &Viewport::fitAll);
+  connect(navBar_, &NavBar::fitRequested, this, [this] { viewport_->fitAll(/*animate=*/true); });
   connect(navBar_, &NavBar::gridToggled, viewport_, &Viewport::setGridVisible);
   connect(navBar_, &NavBar::dragModeChanged, this,
           [this](NavBar::DragMode m) { viewport_->setDragMode(Viewport::DragMode(int(m))); });
@@ -164,7 +166,7 @@ void MainWindow::buildAppMenu() {
 
   auto* fit = new QAction(tr("Fit All"), this);
   fit->setShortcut(QKeySequence(Qt::Key_F6));
-  connect(fit, &QAction::triggered, viewport_, &Viewport::fitAll);
+  connect(fit, &QAction::triggered, this, [this] { viewport_->fitAll(/*animate=*/true); });
   addAction(fit);
 }
 
@@ -194,9 +196,9 @@ void MainWindow::buildBrowser() {
     viewport_->setBodyVisible(visible);
   });
   browserPanel_->setContent(browser_);
-  connect(browserPanel_, &FloatingPanel::collapsedChanged, this, [this] { layoutOverlays(); });
-  connect(browser_, &QTreeWidget::itemExpanded, this, [this] { layoutOverlays(); });
-  connect(browser_, &QTreeWidget::itemCollapsed, this, [this] { layoutOverlays(); });
+  connect(browserPanel_, &FloatingPanel::collapsedChanged, this, [this] { layoutOverlays(true); });
+  connect(browser_, &QTreeWidget::itemExpanded, this, [this] { layoutOverlays(true); });
+  connect(browser_, &QTreeWidget::itemCollapsed, this, [this] { layoutOverlays(true); });
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
@@ -206,7 +208,7 @@ bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
   return QMainWindow::eventFilter(watched, event);
 }
 
-void MainWindow::layoutOverlays() {
+void MainWindow::layoutOverlays(bool animate) {
   const int w = viewport_->width();
   const int h = viewport_->height();
   constexpr int kMargin = 12;
@@ -225,13 +227,18 @@ void MainWindow::layoutOverlays() {
       height = 38 + std::max(rows, 1) * 24 + 14;
     }
     height = std::min(height, h - 2 * kMargin - 60);
-    browserPanel_->setGeometry(kMargin, kMargin, browserPanel_->width(), std::max(height, 40));
+    const QRect target(kMargin, kMargin, browserPanel_->width(), std::max(height, 40));
+    if (animate) {
+      anim::resize(browserPanel_, target);
+    } else {
+      browserPanel_->setGeometry(target);
+    }
     browserPanel_->raise();
   }
   // Command dialog: top-right, under the view cube.
   if (dialog_) {
     dialog_->adjustSize();
-    dialog_->move(w - dialog_->width() - 16, 140);
+    if (!dialog_->property("animating").toBool()) dialog_->move(dialogPosition());
     dialog_->raise();
   }
   // Nav bar: bottom centre.
@@ -258,15 +265,27 @@ void MainWindow::showDialog(CommandDialog* dialog) {
   closeDialog();
   dialog_ = dialog;
   connect(dialog, &CommandDialog::rejected, this, &MainWindow::closeDialog);
+  dialog->adjustSize();
+  dialog->setProperty("animating", true);
   dialog->show();
   layoutOverlays();
+  anim::fadeSlideIn(dialog, dialogPosition());
+  QTimer::singleShot(anim::kNormal + 20, dialog, [dialog] { dialog->setProperty("animating", false); });
   dialog->focusFirstField();
 }
 
 void MainWindow::closeDialog() {
-  if (dialog_) dialog_->deleteLater();
+  if (CommandDialog* d = dialog_) {
+    d->setEnabled(false);
+    anim::fadeOut(d, [d] { d->deleteLater(); });
+  }
   dialog_ = nullptr;
   viewport_->setFocus();
+}
+
+QPoint MainWindow::dialogPosition() const {
+  // Top-right, under the view cube.
+  return {viewport_->width() - (dialog_ ? dialog_->width() : 290) - 16, 140};
 }
 
 void MainWindow::openBoxDialog() {
