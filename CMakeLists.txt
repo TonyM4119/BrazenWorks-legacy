@@ -14,6 +14,23 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+if(MSVC)
+  # Source files are UTF-8; keep <windows.h> (pulled in by OCCT) from
+  # defining min/max macros that break std::min/std::max.
+  add_compile_options(/utf-8 /permissive-)
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _USE_MATH_DEFINES)
+  # The Rust library is always built against the release C runtime.
+  # Mixing it with a Debug (/MDd) C++ build fails at link time.
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    message(WARNING "On Windows use -DCMAKE_BUILD_TYPE=RelWithDebInfo (debuggable) "
+                    "or Release; Debug mixes C runtimes with the Rust library.")
+  endif()
+endif()
+
+# Put the app and tests directly in the build folder (build/dev/brazenworks),
+# so on Windows the DLLs copied next to them are shared.
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
 option(APP_BUILD_TESTS "Build unit tests" ON)
 option(APP_BUILD_GUI   "Build the desktop application (needs Qt 6)" ON)
 if(APP_BUILD_TESTS)

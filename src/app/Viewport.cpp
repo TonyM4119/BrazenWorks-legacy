@@ -1,7 +1,11 @@
 #include "Viewport.h"
 
+#include <AIS_MouseGesture.hxx>
 #include <Aspect_DisplayConnection.hxx>
 #include <Aspect_NeutralWindow.hxx>
+#include <Aspect_ScrollDelta.hxx>
+#include <Aspect_VKeyFlags.hxx>
+#include <NCollection_Vec2.hxx>
 #include <Graphic3d_TransformPers.hxx>
 #include <OpenGl_Context.hxx>
 #include <OpenGl_FrameBuffer.hxx>
@@ -19,6 +23,10 @@
 // OCCT renders into the framebuffer that QOpenGLWidget gives it.
 
 namespace {
+
+// Spelled out instead of Graphic3d_Vec2i: OCCT 8 no longer pulls that typedef
+// in through the viewer headers. Same type in every OCCT version.
+using Vec2i = NCollection_Vec2<int>;
 
 // Wraps Qt's FBO so OCCT draws into it with sRGB handled correctly.
 class QtFrameBuffer : public OpenGl_FrameBuffer {
@@ -58,8 +66,8 @@ Aspect_VKeyFlags toVKeyFlags(Qt::KeyboardModifiers mods) {
   return flags;
 }
 
-Graphic3d_Vec2i toPoint(const QPointF& p, qreal dpr) {
-  return Graphic3d_Vec2i(int(p.x() * dpr), int(p.y() * dpr));
+Vec2i toPoint(const QPointF& p, qreal dpr) {
+  return Vec2i(int(p.x() * dpr), int(p.y() * dpr));
 }
 
 }  // namespace
@@ -90,7 +98,7 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   viewCube_->SetAutoStartAnimation(true);
   viewCube_->SetSize(55);
   viewCube_->SetTransformPersistence(new Graphic3d_TransformPers(
-      Graphic3d_TMF_TriedronPers, Aspect_TOTP_RIGHT_UPPER, Graphic3d_Vec2i(90, 90)));
+      Graphic3d_TMF_TriedronPers, Aspect_TOTP_RIGHT_UPPER, Vec2i(90, 90)));
 
   view_ = viewer_->CreateView();
   view_->SetImmediateUpdate(false);
@@ -123,7 +131,7 @@ Viewport::~Viewport() {
 }
 
 void Viewport::setupMouseGestures() {
-  AIS_MouseGestureMap& map = ChangeMouseGestureMap();
+  auto& map = ChangeMouseGestureMap();  // typedef AIS_MouseGestureMap is gone in OCCT 8
   map.Clear();
   map.Bind(Aspect_VKeyMouse_MiddleButton, AIS_MouseGesture_Pan);
   map.Bind(Aspect_VKeyMouse(Aspect_VKeyMouse_MiddleButton) | Aspect_VKeyFlags(Aspect_VKeyFlags_SHIFT),
@@ -133,7 +141,7 @@ void Viewport::setupMouseGestures() {
 
 void Viewport::initializeGL() {
   const qreal dpr = devicePixelRatioF();
-  const Graphic3d_Vec2i size(int(width() * dpr), int(height() * dpr));
+  const Vec2i size(int(width() * dpr), int(height() * dpr));
   const Aspect_Drawable nativeWindow = (Aspect_Drawable)winId();
 
   Handle(OpenGl_Context) glCtx = new OpenGl_Context();
@@ -183,10 +191,10 @@ void Viewport::paintGL() {
     return;
   }
 
-  Graphic3d_Vec2i oldSize;
+  Vec2i oldSize;
   Handle(Aspect_NeutralWindow) window = Handle(Aspect_NeutralWindow)::DownCast(view_->Window());
   window->Size(oldSize.x(), oldSize.y());
-  const Graphic3d_Vec2i newSize = fbo->GetVPSize();
+  const Vec2i newSize = fbo->GetVPSize();
   if (newSize != oldSize) {
     window->SetSize(newSize.x(), newSize.y());
     view_->MustBeResized();
@@ -251,7 +259,7 @@ void Viewport::mouseMoveEvent(QMouseEvent* e) {
 void Viewport::wheelEvent(QWheelEvent* e) {
   QOpenGLWidget::wheelEvent(e);
   if (view_.IsNull()) return;
-  const Graphic3d_Vec2i pos = toPoint(e->position(), devicePixelRatioF());
+  const Vec2i pos = toPoint(e->position(), devicePixelRatioF());
   if (UpdateZoom(Aspect_ScrollDelta(pos, double(e->angleDelta().y()) / 8.0))) {
     update();
   }

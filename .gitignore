@@ -4,6 +4,9 @@
 target/
 *.user
 CMakeUserPresets.json
+tools/dev-env/local-env.cmd
+aqtinstall.log
+*.log
 compile_commands.json
 
 # Editors / OS

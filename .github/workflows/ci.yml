@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   linux:
@@ -14,7 +15,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build qt6-base-dev libgl-dev libtbb-dev \
+          sudo apt-get install -y build-essential cmake ninja-build qt6-base-dev libgl-dev libtbb-dev libfontconfig-dev \
             libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev \
             libocct-visualization-dev libocct-data-exchange-dev libocct-ocaf-dev occt-misc
 
@@ -22,22 +23,48 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: crates/model_core -> ../../build/cargo
-
       - name: Rust format and lint
         run: |
           cargo fmt --manifest-path crates/model_core/Cargo.toml -- --check
           cargo clippy --manifest-path crates/model_core/Cargo.toml -- -D warnings
 
+      - run: cmake --preset ci
+      - run: cmake --build --preset ci
+      - run: ctest --preset ci
+
+  windows:
+    # Runs the same setup script contributors use. The first run compiles
+    # Open CASCADE (~45 min); after that vcpkg's binary cache makes it quick.
+    runs-on: windows-2022
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\vcpkg\archives
+          key: vcpkg-opencascade-x64-windows-${{ hashFiles('tools/dev-env/setup-windows.ps1') }}
+          restore-keys: vcpkg-opencascade-x64-windows-
+
+      - name: Cache Qt
+        uses: actions/cache@v4
+        with:
+          path: C:\Qt
+          key: qt-6.8.3-msvc2022_64
+
+      - name: Developer setup (tools/dev-env/setup-windows.ps1)
+        shell: pwsh
+        run: tools\dev-env\setup-windows.ps1 -CI -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT
+
       - name: Configure
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+        shell: cmd
+        run: tools\dev-env\msvc.cmd cmake --preset dev
 
       - name: Build
-        run: cmake --build build
+        shell: cmd
+        run: tools\dev-env\msvc.cmd cmake --build --preset dev
 
       - name: Test
-        run: ctest --test-dir build --output-on-failure
-        env:
-          QT_QPA_PLATFORM: offscreen
+        shell: cmd
+        run: tools\dev-env\msvc.cmd ctest --preset dev

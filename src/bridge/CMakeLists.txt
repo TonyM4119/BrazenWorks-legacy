@@ -2,7 +2,8 @@
 # target. Linking `model` gives you the timeline API (generated header
 # "model_core/src/ffi.rs.h") plus the geometry it calls.
 
-find_program(CARGO_EXECUTABLE cargo HINTS "$ENV{HOME}/.cargo/bin" REQUIRED)
+find_program(CARGO_EXECUTABLE cargo
+  HINTS "$ENV{HOME}/.cargo/bin" "$ENV{USERPROFILE}/.cargo/bin" REQUIRED)
 find_package(Threads REQUIRED)
 
 set(CARGO_TARGET_DIR "${CMAKE_BINARY_DIR}/cargo")
@@ -61,7 +62,10 @@ target_link_libraries(model INTERFACE
   Threads::Threads
   ${CMAKE_DL_LIBS})
 if(WIN32)
-  target_link_libraries(model INTERFACE ws2_32 userenv ntdll bcrypt)
+  # System libraries the Rust standard library needs on Windows
+  # (rustc --print native-static-libs). synchronization = WaitOnAddress.
+  target_link_libraries(model INTERFACE
+    ws2_32 userenv ntdll bcrypt synchronization advapi32 kernel32 dbghelp)
 endif()
 
 # Run the pure-Rust unit tests (mock kernel, no OCCT) as part of ctest.

@@ -29,34 +29,51 @@ Rust. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Building
 
-You need CMake ≥ 3.21, a C++20 compiler, Rust (stable, via [rustup](https://rustup.rs)),
-Qt ≥ 6.4 and Open CASCADE ≥ 7.6.
+Each platform has a one-time setup script in `tools/dev-env/`. It installs the
+dependencies and writes `CMakeUserPresets.json`, so building is the same three
+commands everywhere: configure, build, test with the `dev` preset
+(RelWithDebInfo; use `release` for an optimized build).
+
+### Windows
+
+Requirements: Visual Studio 2022 or newer with the *Desktop development with C++*
+workload. `setup-windows.ps1` installs Git, CMake, Ninja, Python and Rust (via
+winget, if missing), Open CASCADE (via vcpkg, compiled once, 30–60 min) and Qt 6
+(via aqtinstall, prebuilt). It also writes `CMakeUserPresets.json`. Run it from an
+**administrator** PowerShell. `msvc.cmd` runs a command inside the MSVC
+environment with Qt on `PATH`:
+
+```bat
+powershell -ExecutionPolicy Bypass -File tools\dev-env\setup-windows.ps1
+tools\dev-env\msvc.cmd cmake --preset dev
+tools\dev-env\msvc.cmd cmake --build --preset dev
+tools\dev-env\msvc.cmd ctest --preset dev
+tools\dev-env\msvc.cmd build\dev\brazenworks.exe
+```
+
+Options: `-VcpkgRoot` (default `C:\vcpkg`, keep it short), `-QtRoot` (default
+`C:\Qt`), `-QtVersion` (default `6.8.3`). The script is safe to re-run. The app
+needs OpenGL 2.1 or newer, which any GPU from the last decade has.
 
 ### Linux (Ubuntu 24.04 / Debian)
 
 ```bash
-sudo apt install build-essential cmake ninja-build qt6-base-dev libgl-dev libtbb-dev \
-  libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev \
-  libocct-visualization-dev libocct-data-exchange-dev libocct-ocaf-dev occt-misc
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build
-ctest --test-dir build --output-on-failure
-./build/src/app/brazenworks
+tools/dev-env/setup-linux.sh          # apt packages + Rust + presets
+cmake --preset dev
+cmake --build --preset dev
+ctest --preset dev
+./build/dev/brazenworks
 ```
 
 ### macOS
 
 ```bash
-brew install cmake ninja qt opencascade
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$(brew --prefix qt);$(brew --prefix opencascade)"
-cmake --build build
+tools/dev-env/setup-macos.sh          # Homebrew packages + Rust + presets
+cmake --preset dev
+cmake --build --preset dev
+ctest --preset dev
+open build/dev/brazenworks.app
 ```
-
-### Windows
-
-Install Visual Studio 2022 (C++ workload), Rust, and dependencies with
-[vcpkg](https://vcpkg.io): `vcpkg install opencascade qtbase`. Then configure with
-`-DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake`.
 
 ### Rust-only tests
 
