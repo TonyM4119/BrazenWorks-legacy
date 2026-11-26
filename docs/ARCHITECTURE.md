@@ -33,6 +33,15 @@ dimension edits are all "change the list, replay". Geometry goes through the
 (`cargo test`, no C++ needed). Planned here as well: the sketch constraint
 solver, the document file format, and CAM toolpath logic.
 
+**Sketches** (`crates/model_core/src/sketch/`). A `Sketch` lives on a
+`SketchPlane` and holds points, lines, circles and arcs (`Entity`) and
+constraints/dimensions (`SketchConstraint`), all with ids that are never
+reused. Each solve feeds them to the solver and writes positions back.
+`add_constraint` refuses a constraint that would over-constrain the sketch and
+names the ones it clashes with. A sketch is a timeline feature
+(`FeatureKind::Sketch`) that leaves the body unchanged; features have stable
+`FeatureId`s, which is how the UI and later features refer to a sketch.
+
 **Sketch solver.** `crates/model_core/src/sketch/solver_adapter.rs` wraps the
 2D constraint solver (MitCad's `mitcad-solver`, MIT, pinned to a release tag)
 behind our own types (`ConstraintSolver`, `Rule`, `PointRef`…). It is the only

@@ -13,4 +13,4 @@ pub mod timeline;
 mod ffi;
 
 pub use kernel::{BodyOp, Kernel, Profile};
-pub use timeline::{Feature, FeatureKind, RebuildResult, Timeline};
+pub use timeline::{Feature, FeatureId, FeatureKind, RebuildResult, Timeline};

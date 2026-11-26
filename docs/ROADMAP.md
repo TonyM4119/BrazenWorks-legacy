@@ -10,10 +10,12 @@ Small, shippable milestones. Each one should leave the app usable for something.
 - [x] STEP export
 
 ## M1: Sketching
-- [ ] Sketch on a plane or planar face; lines, arcs, circles, rectangles
-- [ ] Constraint solver in Rust (coincident, horizontal/vertical, parallel,
-      perpendicular, tangent, equal, dimensions); look at MitCad's solver first
-- [ ] Profile detection: closed loops → faces for features
+- [x] UI themed to the concept, with anti-aliasing and animations
+- [x] Constraint solver (MitCad's, behind our adapter) + weekly update PRs
+- [x] Sketch model: planes, lines, arcs, circles, rectangles, constraints,
+      dimensions, conflict refusal, drag; sketches as timeline features
+- [ ] Profile detection: closed loops → faces; extrude from sketch profiles
+- [ ] Sketch UI: draw, constrain, dimension, finish, extrude
 
 ## M2: Core modeling
 - [ ] Extrude/revolve from sketch profiles, with in-canvas manipulators and the

@@ -16,3 +16,8 @@ add_test(NAME test_geometry COMMAND test_geometry)
 add_executable(test_timeline test_timeline.cpp)
 target_link_libraries(test_timeline PRIVATE model)
 add_test(NAME test_timeline COMMAND test_timeline)
+
+# Sketch API through the bridge, as the UI uses it.
+add_executable(test_sketch test_sketch.cpp)
+target_link_libraries(test_sketch PRIVATE model)
+add_test(NAME test_sketch COMMAND test_sketch)
