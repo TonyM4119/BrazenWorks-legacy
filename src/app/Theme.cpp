@@ -65,6 +65,12 @@ QToolTip { background: {panel}; color: {text}; border: 1px solid {panelBorder}; 
 #ToolButton { border: 1px solid transparent; border-radius: 6px; background: transparent; }
 /* #ToolButton hover is painted (and faded) by AnimatedToolButton */
 #ToolButton:pressed, #ToolButton:checked { border-color: {accent}; }
+#ToolButton[active="true"] { border-color: {accent}; background: {selection}; }
+#PrimaryToolButton { border: 0; border-radius: 6px; background: {success}; color: {accentText};
+  font-weight: 600; font-size: 10px; padding: 4px 6px; }
+#PrimaryToolButton:hover { background: {successHover}; }
+#SketchValueEdit { background: {field}; color: {text}; border: 1px solid {accent}; border-radius: 4px;
+  padding: 2px 6px; font-size: 12px; selection-background-color: {accent}; selection-color: {accentText}; }
 #GroupButton { border: 0; background: transparent; color: {textMuted}; font-size: 10px; font-weight: 700;
                letter-spacing: 0.8px; padding: 2px 4px; }
 #GroupButton:hover { color: {text}; }
@@ -96,6 +102,7 @@ QMenu::separator { height: 1px; background: {panelBorder}; margin: 4px 6px; }
 
 /* Command dialog */
 #DialogLabel { color: {textMuted}; background: transparent; }
+#DialogInfo { color: {text}; background: transparent; font-weight: 600; }
 QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox#DialogCombo {
   background: {field}; border: 1px solid {fieldBorder}; border-radius: 4px; padding: 3px 6px; min-height: 20px;
   selection-background-color: {selection}; }
@@ -144,7 +151,7 @@ QMessageBox { background: {panel}; }
       {"accent", p.accent},               {"accentText", p.accentText},
       {"accentHover", p.accent.lighter(110)},
       {"highlight", p.highlight},         {"success", p.success},
-      {"danger", p.danger},
+      {"danger", p.danger},              {"successHover", p.success.lighter(112)},
   };
   for (auto it = tokens.cbegin(); it != tokens.cend(); ++it) {
     qss.replace("{" + it.key() + "}", it.value().name());

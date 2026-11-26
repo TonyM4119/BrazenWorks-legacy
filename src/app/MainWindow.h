@@ -3,13 +3,20 @@
 #include "GeometryBridge.h"
 #include "model_core/src/ffi.rs.h"  // Rust timeline API (generated)
 
+#include "sketch/SketchEditor.h"
+
 #include <QMainWindow>
 #include <QPointer>
+
+#include <memory>
+#include <vector>
 
 class CommandDialog;
 class DocumentBar;
 class FloatingPanel;
 class NavBar;
+class PlanePicker;
+class ProfilePicker;
 class QMenu;
 class QTreeWidget;
 class Ribbon;
@@ -25,6 +32,7 @@ class MainWindow : public QMainWindow {
   Q_OBJECT
  public:
   explicit MainWindow(QWidget* parent = nullptr);
+  ~MainWindow() override;
 
  protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -54,6 +62,25 @@ class MainWindow : public QMainWindow {
   void exportStep();
   void showAbout();
 
+  // Sketching.
+  void openCreateSketch();
+  void createSketch(model::OriginPlaneKind plane);
+  void enterSketch(std::uint64_t sketch);
+  void finishSketch();
+  void onSketchTool(const QString& id);
+  void showSketches();
+  QVector<std::uint64_t> sketchIds(bool unconsumedOnly) const;
+
+  // Extrude from sketch profiles.
+  void openExtrudeDialog();
+  void cancelPickers();
+
+  // Undo / redo of the whole document.
+  void pushUndo();
+  void undo();
+  void redo();
+  void afterHistoryChange();
+
   rust::Box<model::Timeline> timeline_ = model::new_timeline();
   TopoDS_Shape body_;
   QVector<std::size_t> failed_;
@@ -67,4 +94,13 @@ class MainWindow : public QMainWindow {
   QTreeWidget* browser_ = nullptr;
   NavBar* navBar_ = nullptr;
   QPointer<CommandDialog> dialog_;
+
+  std::unique_ptr<SketchEditor> sketchEditor_;
+  std::unique_ptr<PlanePicker> planePicker_;
+  std::unique_ptr<ProfilePicker> profilePicker_;
+  long sketchReturnMarker_ = -1;  // marker to restore after editing an older sketch
+  bool previewing_ = false;       // the view shows an extrude preview
+  std::vector<rust::Box<model::Timeline>> undo_;
+  std::vector<rust::Box<model::Timeline>> redo_;
+  QString permanentStatus_;
 };

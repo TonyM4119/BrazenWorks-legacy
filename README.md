@@ -21,7 +21,7 @@ along the bottom. One app covers design (sketch, model, assemble) and manufactur
 | `src/app` | C++20 + Qt 6 | Desktop UI: ribbon, browser, viewport, timeline |
 | `src/geometry` | C++20 | Thin facade over [Open CASCADE Technology](https://dev.opencascade.org) (B-rep kernel) |
 | `src/bridge` | C++ ⇄ Rust | [CXX](https://cxx.rs) bridge between the model and the kernel |
-| `crates/model_core` | Rust | Document model and feature timeline (later: sketch solver, CAM logic) |
+| `crates/model_core` | Rust | Document model, feature timeline, sketches and profiles (MitCAD's solver behind an adapter); later CAM logic |
 
 Why this split: OCCT and Qt are C++, so the UI and kernel wrapper stay in C++ with
 no translation layer. The model logic, where most of the tricky state lives, is in
@@ -92,6 +92,28 @@ centimeters or meters. The choice is remembered for new documents.
 Length fields accept any unit and mix them; a bare number is in the document unit:
 `2`, `1 1/4`, `3/8"`, `1' 6"`, `25mm`, `2in + 5mm`. Internally everything is stored in
 millimeters, so switching units never changes the geometry.
+
+## Sketching
+
+1. **Create Sketch** (first tool in the ribbon), then click one of the three origin
+   planes, or pick it in the dialog. The view turns to face the plane.
+2. Draw with the **SKETCH** tab or keys: **L** line, **R** rectangle, **C** circle,
+   **A** 3-point arc, **P** point. Clicks snap to points, the origin and curves; lines
+   within a few degrees of level or plumb get Horizontal/Vertical. Double-click, right-
+   click or **Esc** ends a line chain.
+3. **D** dimensions: click a line then empty space (length), a circle (diameter), an arc
+   (radius), two points (distance), a point and a line, or two lines (angle). Type a value
+   in any unit (`2 1/4`, `30mm`) and press **Enter**. Double-click a dimension to change it.
+4. Constraints: pick a tool in **CONSTRAINTS**, then the geometry (or select first, then
+   the tool). Refused constraints say why.
+5. Colours: **blue** can still move, **white** is fully constrained, **red** conflicts;
+   dashed is construction (**X**). The status bar shows the degrees of freedom left.
+6. **S** / Esc returns to select: click to select, drag points or lines, **Delete**.
+7. **Finish Sketch**, then **Extrude**: click profiles (they light up), set the distance,
+   direction and Join/Cut/New Body; the result previews live.
+
+Double-click a sketch in the timeline or Browser to edit it later. **Ctrl+Z** /
+**Ctrl+Y** undo and redo anything.
 
 ## Viewport controls
 

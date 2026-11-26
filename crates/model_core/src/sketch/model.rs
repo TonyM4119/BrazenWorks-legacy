@@ -482,18 +482,96 @@ impl Sketch {
         constraint: SketchConstraint,
     ) -> Result<ConstraintId, SketchError> {
         self.validate(&constraint)?;
-        let mut built = self.build_solver_with_constraints()?;
-        built.solver.solve();
-        let rule = built.rule(&constraint)?;
-        match built.solver.try_add(rule).map_err(solver_error)? {
-            Ok(_) => {
+        let saved = self.entities.clone();
+        self.pre_orient(&constraint);
+        let result = (|| {
+            let mut built = self.build_solver_with_constraints()?;
+            built.solver.solve();
+            let rule = built.rule(&constraint)?;
+            match built.solver.try_add(rule).map_err(solver_error)? {
+                Ok(_) => Ok(()),
+                Err(conflicts) => Err(SketchError::Conflicts(built.constraint_ids(&conflicts))),
+            }
+        })();
+        match result {
+            Ok(()) => {
                 // The id is only taken once accepted: a refusal leaves no trace.
                 let id = ConstraintId(self.take_id());
                 self.constraints.push((id, constraint));
                 self.solve();
                 Ok(id)
             }
-            Err(conflicts) => Err(SketchError::Conflicts(built.constraint_ids(&conflicts))),
+            Err(e) => {
+                self.entities = saved;
+                Err(e)
+            }
+        }
+    }
+
+    /// Turns one line of a Parallel/Perpendicular pair into place before
+    /// solving, the way interactive CAD does. Without it the solver may meet
+    /// the constraint by shrinking a line to nothing (its residual is
+    /// `unit(a) · (b2 - b1)`). The second line turns, unless it is held
+    /// (horizontal, vertical or a fixed end) and the first is not.
+    fn pre_orient(&mut self, constraint: &SketchConstraint) {
+        let (a, b, perpendicular) = match *constraint {
+            SketchConstraint::Parallel(a, b) => (a, b, false),
+            SketchConstraint::Perpendicular(a, b) => (a, b, true),
+            _ => return,
+        };
+        let ends = |s: &Self, id: EntityId| match s.entity(id).map(|e| e.geometry) {
+            Some(Geometry::Line { start, end }) => Some((start, end)),
+            _ => None,
+        };
+        let (Some(la), Some(lb)) = (ends(self, a), ends(self, b)) else {
+            return;
+        };
+        let held = |s: &Self, line: EntityId, (p, q): (EntityId, EntityId)| {
+            s.constraints.iter().any(|(_, c)| match *c {
+                SketchConstraint::Horizontal(l) | SketchConstraint::Vertical(l) => l == line,
+                SketchConstraint::Fix(x) => x == p || x == q,
+                _ => false,
+            })
+        };
+        let (reference, moving) = if held(self, b, lb) && !held(self, a, la) {
+            (lb, la)
+        } else {
+            (la, lb)
+        };
+        let (Some(r0), Some(r1), Some(m0), Some(m1)) = (
+            self.point(reference.0),
+            self.point(reference.1),
+            self.point(moving.0),
+            self.point(moving.1),
+        ) else {
+            return;
+        };
+        let (rx, ry) = (r1[0] - r0[0], r1[1] - r0[1]);
+        let rlen = rx.hypot(ry);
+        let (mx, my) = (m1[0] - m0[0], m1[1] - m0[1]);
+        let mlen = mx.hypot(my);
+        if rlen < 1e-12 || mlen < 1e-12 {
+            return;
+        }
+        let (mut tx, mut ty) = if perpendicular {
+            (-ry / rlen, rx / rlen)
+        } else {
+            (rx / rlen, ry / rlen)
+        };
+        if tx * mx + ty * my < 0.0 {
+            (tx, ty) = (-tx, -ty); // keep the line's own direction
+        }
+        let mid = [(m0[0] + m1[0]) / 2.0, (m0[1] + m1[1]) / 2.0];
+        let half = mlen / 2.0;
+        self.set_point(moving.0, [mid[0] - tx * half, mid[1] - ty * half]);
+        self.set_point(moving.1, [mid[0] + tx * half, mid[1] + ty * half]);
+    }
+
+    fn set_point(&mut self, id: EntityId, p: [f64; 2]) {
+        if let Some(e) = self.entities.iter_mut().find(|e| e.id == id) {
+            if let Geometry::Point { x, y } = &mut e.geometry {
+                (*x, *y) = (p[0], p[1]);
+            }
         }
     }
 

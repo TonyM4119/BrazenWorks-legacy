@@ -27,7 +27,11 @@ qt_add_executable(app
   widgets/Ribbon.cpp
   widgets/Ribbon.h
   widgets/TimelineBar.cpp
-  widgets/TimelineBar.h)
+  widgets/TimelineBar.h
+  sketch/Pickers.cpp
+  sketch/Pickers.h
+  sketch/SketchEditor.cpp
+  sketch/SketchEditor.h)
 
 target_include_directories(app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 

@@ -9,6 +9,7 @@ class LengthField;
 class QComboBox;
 class QDoubleSpinBox;
 class QGridLayout;
+class QLabel;
 
 // The floating dialog a command opens (EXTRUDE, FILLET, BOX…): labelled
 // inputs in a grid and OK / Cancel. Enter accepts, Esc cancels.
@@ -19,6 +20,8 @@ class CommandDialog : public FloatingPanel {
 
   QDoubleSpinBox* addNumber(const QString& label, double value, const QString& suffix = QStringLiteral(" mm"),
                             double min = -1e6, double max = 1e6, int decimals = 2);
+  // A read-only line ("Profiles: 2 selected").
+  QLabel* addInfo(const QString& label, const QString& text);
   QComboBox* addChoice(const QString& label, const QStringList& options, int current = 0);
   // A length shown in the document unit; `minMm` rejects smaller values.
   LengthField* addLength(const QString& label, double valueMm, model::LengthUnitKind unit, double minMm = -1e12);

@@ -61,6 +61,17 @@ QDoubleSpinBox* CommandDialog::addNumber(const QString& label, double value, con
   return field;
 }
 
+QLabel* CommandDialog::addInfo(const QString& label, const QString& text) {
+  auto* name = new QLabel(label, this);
+  name->setObjectName("DialogLabel");
+  auto* value = new QLabel(text, this);
+  value->setObjectName("DialogInfo");
+  grid_->addWidget(name, rows_, 0);
+  grid_->addWidget(value, rows_, 1);
+  ++rows_;
+  return value;
+}
+
 QComboBox* CommandDialog::addChoice(const QString& label, const QStringList& options, int current) {
   auto* name = new QLabel(label, this);
   name->setObjectName("DialogLabel");

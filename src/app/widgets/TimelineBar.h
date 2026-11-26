@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QFrame>
+#include <QTimer>
 #include <QVector>
 
 class QHBoxLayout;
@@ -30,11 +31,16 @@ class TimelineBar : public QFrame {
  signals:
   void markerRequested(int marker);   // features [0, marker) active
   void stepRequested(int delta);
+  void featureDoubleClicked(int index);  // e.g. edit a sketch
+
 
  private:
   QHBoxLayout* chips_ = nullptr;
   QLabel* status_ = nullptr;
   QToolButton* units_ = nullptr;
   QString permanentStatus_;
+  QString tempStatus_;
   int count_ = 0;
+  QTimer pendingClick_;
+  int pendingChip_ = -1;
 };

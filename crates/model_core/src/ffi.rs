@@ -239,6 +239,8 @@ mod bridge {
         /// body was produced; indices of failed features go into `failed`.
         fn timeline_rebuild(t: &Timeline, failed: &mut Vec<usize>) -> UniquePtr<Shape>;
 
+        /// A full copy (used for undo/redo and previews).
+        fn timeline_clone(t: &Timeline) -> Box<Timeline>;
         fn timeline_units(t: &Timeline) -> LengthUnitKind;
         fn timeline_set_units(t: &mut Timeline, unit: LengthUnitKind);
         /// "1.25 in", "25.40 mm"…
@@ -272,6 +274,12 @@ mod bridge {
             sketch: u64,
             cx: f64,
             cy: f64,
+            radius: f64,
+        ) -> Result<u64>;
+        fn sketch_add_circle(
+            t: &mut Timeline,
+            sketch: u64,
+            centre: u64,
             radius: f64,
         ) -> Result<u64>;
         fn sketch_add_arc(
@@ -327,6 +335,8 @@ mod bridge {
 
         /// Closed regions of a sketch that can be extruded, largest first.
         fn sketch_profiles(t: &Timeline, sketch: u64) -> Result<Vec<ProfileInfo>>;
+        /// True if an active extrude uses this sketch (then it is hidden in the view).
+        fn timeline_sketch_consumed(t: &Timeline, sketch: u64) -> bool;
         /// Extrudes profiles (by key) of an earlier sketch; inserted at the marker.
         fn timeline_add_extrude_sketch(
             t: &mut Timeline,
@@ -1021,4 +1031,29 @@ fn length_unit_name(unit: bridge::LengthUnitKind) -> &'static str {
 
 fn length_unit_mm(unit: bridge::LengthUnitKind) -> f64 {
     unit_from(unit).mm_per_unit()
+}
+
+fn timeline_clone(t: &Timeline) -> Box<Timeline> {
+    Box::new(t.clone())
+}
+
+fn sketch_add_circle(
+    t: &mut Timeline,
+    sketch: u64,
+    centre: u64,
+    radius: f64,
+) -> Result<u64, String> {
+    sketch_mut(t, sketch)?
+        .add_circle(EntityId(centre), radius)
+        .map(|e| e.0)
+        .map_err(err)
+}
+
+fn timeline_sketch_consumed(t: &Timeline, sketch: u64) -> bool {
+    (0..t.marker().min(t.len())).any(|i| {
+        matches!(
+            t.get(i).map(|f| &f.kind),
+            Some(FeatureKind::Extrude { source: ExtrudeSource::Sketch { sketch: s, .. }, .. }) if s.0 == sketch
+        )
+    })
 }

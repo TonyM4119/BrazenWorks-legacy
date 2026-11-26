@@ -8,6 +8,7 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMenu>
+#include <QStyle>
 #include <QTabBar>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -61,6 +62,15 @@ void Ribbon::setCurrentWorkspace(int index) { workspaceBox_->setCurrentIndex(ind
 
 int Ribbon::currentWorkspace() const { return workspaceBox_->currentIndex(); }
 
+void Ribbon::setActiveTool(const QString& id) {
+  activeTool_ = id;
+  for (auto it = buttons_.begin(); it != buttons_.end(); ++it) {
+    it.value()->setProperty("active", it.key() == id);
+    it.value()->style()->unpolish(it.value());
+    it.value()->style()->polish(it.value());
+  }
+}
+
 void Ribbon::rebuildTools() {
   const int ws = workspaceBox_->currentIndex();
   if (ws < 0 || ws >= workspaces_.size()) return;
@@ -69,6 +79,7 @@ void Ribbon::rebuildTools() {
   while (tabs_->count() > 0) tabs_->removeTab(0);
   for (const QString& t : w.tabs) tabs_->addTab(t);
 
+  buttons_.clear();
   while (QLayoutItem* item = toolRow_->takeAt(0)) {
     delete item->widget();
     delete item;
@@ -94,6 +105,15 @@ void Ribbon::rebuildTools() {
       b->setIcon(icons::get(t.icon, theme::kIconSize));
       b->setIconSize(QSize(theme::kIconSize, theme::kIconSize));
       b->setFixedSize(40, 40);
+      if (t.primary) {
+        b->setObjectName("PrimaryToolButton");
+        b->setIcon(icons::tinted(t.icon, theme::current().accentText, theme::kIconSize));
+        b->setText(t.label);
+        b->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        b->setFixedSize(QSize(96, 48));
+      }
+      b->setProperty("active", t.id == activeTool_);
+      buttons_.insert(t.id, b);
       b->setToolTip(tip);
       b->setEnabled(enabled);
       const QString id = t.id;

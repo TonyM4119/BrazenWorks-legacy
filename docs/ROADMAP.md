@@ -9,19 +9,26 @@ Small, shippable milestones. Each one should leave the app usable for something.
 - [x] Rust timeline over OCCT via CXX: extrude (join/cut/new body), fillet, rollback
 - [x] STEP export
 
-## M1: Sketching
+## M1: Sketching ✅
 - [x] UI themed to the concept, with anti-aliasing and animations
 - [x] Constraint solver (MitCad's, behind our adapter) + weekly update PRs
 - [x] Sketch model: planes, lines, arcs, circles, rectangles, constraints,
       dimensions, conflict refusal, drag; sketches as timeline features
 - [x] Profile detection: closed loops → faces; extrude from sketch profiles
-- [ ] Sketch UI: draw, constrain, dimension, finish, extrude
+- [x] Sketch UI: Create Sketch on an origin plane, SKETCH tab with Finish Sketch;
+      line, rectangle, circle, 3-point arc, point, construction; snapping and
+      horizontal/vertical inference; 12 constraint tools; dimensions typed in any
+      unit; drag with the solver; free/fully constrained/conflict colours and DOF
+- [x] Extrude: pick profiles in the view, live preview, distance, direction,
+      join/cut/new body
+- [x] Edit a sketch later (double-click in the timeline or Browser)
+- [x] Undo/redo of the whole document (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z)
 
 ## M2: Core modeling
-- [ ] Extrude/revolve from sketch profiles, with in-canvas manipulators and the
-      floating command dialog (as in the UI concept)
+- [ ] Revolve; extrude manipulators in the canvas (drag arrow), extrude to faces
+- [ ] Sketch on faces and offset planes; trim, offset, fillet in sketches; project
 - [ ] Edit feature → replay; timeline drag-reorder and suppress
-- [ ] Native document format (save/open), autosave, undo/redo
+- [ ] Native document format (save/open), autosave
 - [ ] Fillet/chamfer on selected edges, shell, hole, press-pull
 
 ## M3: Interop

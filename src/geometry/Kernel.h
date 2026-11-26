@@ -54,6 +54,16 @@ TopoDS_Shape extrudeRegion(const Plane& plane, const Loop2& outer, const std::ve
 
 double area(const TopoDS_Shape& shape);
 
+// ---- Display helpers (sketch overlay) -------------------------------------
+using Point2 = std::array<double, 2>;
+
+// Open curves on a plane as one compound of edges (lines, arcs, circles).
+TopoDS_Shape makeCurves(const Plane& plane, const std::vector<Seg2>& segments);
+// Points on a plane as a compound of vertices.
+TopoDS_Shape makeVertices(const Plane& plane, const std::vector<Point2>& points);
+// A face from polygon loops (first = outer, rest = holes), for highlighting.
+TopoDS_Shape makePolygonFace(const Plane& plane, const std::vector<std::vector<Point2>>& loops);
+
 // Extrude a profile along +Z by `distance` (negative extrudes along -Z).
 TopoDS_Shape extrude(const RectProfile& profile, double distance);
 TopoDS_Shape extrude(const CircleProfile& profile, double distance);

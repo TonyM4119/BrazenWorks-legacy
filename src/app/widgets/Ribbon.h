@@ -19,6 +19,7 @@ class Ribbon : public QFrame {
     QString label;
     QString icon;
     QString tip;      // empty = enabled; otherwise shown and the tool is disabled
+    bool primary = false;  // big coloured button with its label (e.g. Finish Sketch)
   };
   struct Group {
     QString label;
@@ -35,6 +36,8 @@ class Ribbon : public QFrame {
   void setWorkspaces(const QVector<Workspace>& workspaces);
   void setCurrentWorkspace(int index);
   int currentWorkspace() const;
+  // Highlights the tool that is running (empty = none).
+  void setActiveTool(const QString& id);
 
  signals:
   void toolTriggered(const QString& id);
@@ -47,4 +50,6 @@ class Ribbon : public QFrame {
   QTabBar* tabs_ = nullptr;
   QHBoxLayout* toolRow_ = nullptr;
   QVector<Workspace> workspaces_;
+  QHash<QString, QToolButton*> buttons_;
+  QString activeTool_;
 };

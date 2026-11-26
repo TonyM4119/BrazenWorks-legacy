@@ -231,3 +231,46 @@ fn construction_flag_round_trips() {
     s.set_construction(l, true).unwrap();
     assert!(s.entity(l).unwrap().construction);
 }
+
+#[test]
+fn perpendicular_turns_a_line_instead_of_collapsing_one() {
+    // MitCAD's residual `unit(a) · (b2 - b1)` is also met by shrinking b to a
+    // point; pre-orienting keeps both lines at their length.
+    let mut s = Sketch::new("p", SketchPlane::origin_plane(OriginPlane::XY));
+    let a0 = s.add_point(0.0, 0.0);
+    let a1 = s.add_point(25.0, 12.0);
+    let l1 = s.add_line(a0, a1).unwrap();
+    let b0 = s.add_point(0.0, -12.0);
+    let b1 = s.add_point(37.0, -12.0);
+    let l2 = s.add_line(b0, b1).unwrap();
+    s.add_constraint(SketchConstraint::Horizontal(l2)).unwrap();
+    s.add_constraint(SketchConstraint::Perpendicular(l1, l2))
+        .unwrap();
+    let len = |p: EntityId, q: EntityId| {
+        let (p, q) = (s.point(p).unwrap(), s.point(q).unwrap());
+        (q[0] - p[0]).hypot(q[1] - p[1])
+    };
+    assert!(
+        (len(b0, b1) - 37.0).abs() < 1e-6,
+        "horizontal line kept its length"
+    );
+    assert!(
+        (len(a0, a1) - 25.0f64.hypot(12.0)).abs() < 1e-6,
+        "turned line kept its length"
+    );
+    let (p, q) = (s.point(a0).unwrap(), s.point(a1).unwrap());
+    assert!((q[0] - p[0]).abs() < 1e-7, "the free line turned vertical");
+}
+
+#[test]
+fn parallel_turns_the_second_line() {
+    let mut s = Sketch::new("p", SketchPlane::origin_plane(OriginPlane::XY));
+    let l1 = s.add_line_xy([0.0, 0.0], [10.0, 0.0]);
+    let l2 = s.add_line_xy([0.0, 5.0], [8.0, 9.0]);
+    s.add_constraint(SketchConstraint::Parallel(l1, l2))
+        .unwrap();
+    let pts = s.entity(l2).unwrap().geometry.defining_points();
+    let (p, q) = (s.point(pts[0]).unwrap(), s.point(pts[1]).unwrap());
+    assert!((q[1] - p[1]).abs() < 1e-7);
+    assert!(((q[0] - p[0]).abs() - 8.0f64.hypot(4.0)).abs() < 1e-6);
+}

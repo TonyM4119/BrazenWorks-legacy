@@ -5,6 +5,7 @@
 #include "Kernel.h"
 #include "Theme.h"
 #include "Viewport.h"
+#include "sketch/Pickers.h"
 #include "widgets/Animations.h"
 #include "widgets/CommandDialog.h"
 #include "widgets/DocumentBar.h"
@@ -24,6 +25,9 @@
 #include <QEvent>
 #include <QFileDialog>
 #include <QHeaderView>
+#include <QComboBox>
+#include <QKeySequence>
+#include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
 #include <QSettings>
@@ -33,12 +37,12 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cstdint>
 
 namespace {
 
 // Tools are generic CAD/CAM terms. A non-empty `tip` disables the tool and
 // says when it arrives (see docs/ROADMAP.md).
-const QString kSketchTip = QStringLiteral("Coming in M1: sketching");
 const QString kLaterTip = QStringLiteral("Not implemented yet. See docs/ROADMAP.md");
 const QString kCamTip = QStringLiteral("Coming in M5: Manufacture workspace");
 
@@ -50,10 +54,10 @@ QVector<Ribbon::Workspace> workspaces() {
       {"SOLID", "SURFACE", "MESH", "SHEET METAL", "PLASTIC", "UTILITIES", "MANAGE"},
       {
           G{"CREATE",
-            {T{"design.sketch", "Create Sketch", "sketch", kSketchTip},
+            {T{"design.sketch", "Create Sketch", "sketch", {}},
              T{"design.box", "Box", "box", {}},
-             T{"design.extrude", "Extrude", "extrude", kSketchTip},
-             T{"design.revolve", "Revolve", "revolve", kSketchTip},
+             T{"design.extrude", "Extrude", "extrude", {}},
+             T{"design.revolve", "Revolve", "revolve", QStringLiteral("Coming in M3")},
              T{"design.sweep", "Sweep", "sweep", kLaterTip},
              T{"design.loft", "Loft", "loft", kLaterTip},
              T{"design.hole", "Hole", "hole", kLaterTip}}},
@@ -91,6 +95,58 @@ QVector<Ribbon::Workspace> workspaces() {
   return {design, manufacture};
 }
 
+// The contextual SKETCH tab shown while a sketch is open.
+QVector<Ribbon::Workspace> sketchWorkspace() {
+  using G = Ribbon::Group;
+  using T = Ribbon::Tool;
+  Ribbon::Workspace w{
+      "Design",
+      {"SKETCH"},
+      {
+          G{"CREATE",
+            {T{"sketch.line", "Line (L)", "line", {}}, T{"sketch.rectangle", "Rectangle (R)", "rectangle", {}},
+             T{"sketch.circle", "Circle (C)", "circle", {}}, T{"sketch.arc", "3-Point Arc (A)", "arc", {}},
+             T{"sketch.point", "Point (P)", "point", {}}}},
+          G{"MODIFY",
+            {T{"sketch.construction", "Construction (X)", "construction", {}},
+             T{"sketch.delete", "Delete (Del)", "close", {}}}},
+          G{"CONSTRAINTS",
+            {T{"sketch.c.coincident", "Coincident", "coincident", {}},
+             T{"sketch.c.horizontal", "Horizontal", "horizontal", {}},
+             T{"sketch.c.vertical", "Vertical", "vertical", {}},
+             T{"sketch.c.parallel", "Parallel", "parallel", {}},
+             T{"sketch.c.perpendicular", "Perpendicular", "perpendicular", {}},
+             T{"sketch.c.tangent", "Tangent", "tangent", {}}, T{"sketch.c.equal", "Equal", "equal", {}},
+             T{"sketch.c.midpoint", "Midpoint", "midpoint", {}},
+             T{"sketch.c.concentric", "Concentric", "concentric", {}},
+             T{"sketch.c.collinear", "Collinear", "collinear", {}},
+             T{"sketch.c.symmetric", "Symmetric", "symmetric", {}}, T{"sketch.c.fix", "Fix", "fix", {}}}},
+          G{"INSPECT", {T{"sketch.dimension", "Sketch Dimension (D)", "dimension", {}}}},
+          G{"SELECT", {T{"sketch.select", "Select (S)", "select", {}}}},
+          G{"FINISH SKETCH", {T{"sketch.finish", "Finish Sketch", "check", {}, /*primary=*/true}}},
+      }};
+  return {w};
+}
+
+struct ConstraintTool {
+  const char* id;
+  model::ConstraintKind kind;
+};
+const ConstraintTool kConstraintTools[] = {
+    {"sketch.c.coincident", model::ConstraintKind::Coincident},
+    {"sketch.c.horizontal", model::ConstraintKind::Horizontal},
+    {"sketch.c.vertical", model::ConstraintKind::Vertical},
+    {"sketch.c.parallel", model::ConstraintKind::Parallel},
+    {"sketch.c.perpendicular", model::ConstraintKind::Perpendicular},
+    {"sketch.c.tangent", model::ConstraintKind::Tangent},
+    {"sketch.c.equal", model::ConstraintKind::Equal},
+    {"sketch.c.midpoint", model::ConstraintKind::Midpoint},
+    {"sketch.c.concentric", model::ConstraintKind::Concentric},
+    {"sketch.c.collinear", model::ConstraintKind::Collinear},
+    {"sketch.c.symmetric", model::ConstraintKind::Symmetric},
+    {"sketch.c.fix", model::ConstraintKind::Fix},
+};
+
 QString toQString(const rust::String& s) { return QString::fromUtf8(s.data(), int(s.size())); }
 
 model::Profile rectProfile(double x, double y, double w, double h) {
@@ -107,7 +163,7 @@ QString iconForType(const QString& type) {
   return "extrude";
 }
 
-enum BrowserRole { kVisibilityRole = Qt::UserRole + 1, kUnitsRole };
+enum BrowserRole { kVisibilityRole = Qt::UserRole + 1, kUnitsRole, kFeatureRole };
 
 constexpr double kInch = 25.4;  // mm
 
@@ -146,11 +202,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   column->addWidget(viewport_, 1);
 
   timelineBar_ = new TimelineBar(central);
-  timelineBar_->setPermanentStatus(QString("Open CASCADE %1").arg(OCC_VERSION_COMPLETE));
+  permanentStatus_ = QString("Open CASCADE %1").arg(OCC_VERSION_COMPLETE);
+  timelineBar_->setPermanentStatus(permanentStatus_);
   auto* unitsMenu = new QMenu(timelineBar_->unitsButton());
   fillUnitsMenu(unitsMenu);
   timelineBar_->unitsButton()->setMenu(unitsMenu);
   connect(timelineBar_, &TimelineBar::markerRequested, this, [this](int m) { setMarker(m); });
+  connect(timelineBar_, &TimelineBar::featureDoubleClicked, this, [this](int index) {
+    if (std::size_t(index) >= model::timeline_len(*timeline_)) return;
+    if (toQString(model::timeline_feature_type(*timeline_, std::size_t(index))) == "Sketch")
+      enterSketch(model::timeline_feature_id(*timeline_, std::size_t(index)));
+  });
   connect(timelineBar_, &TimelineBar::stepRequested, this,
           [this](int d) { setMarker(long(model::timeline_marker(*timeline_)) + d); });
   column->addWidget(timelineBar_);
@@ -167,9 +229,30 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   connect(navBar_, &NavBar::displayModeChanged, this,
           [this](NavBar::DisplayMode m) { viewport_->setDisplayMode(Viewport::DisplayMode(int(m))); });
 
+  connect(browser_, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int) {
+    const QVariant id = item->data(0, kFeatureRole);
+    if (id.isValid()) enterSketch(id.toULongLong());
+  });
+
+  auto* undoAction = new QAction(tr("Undo"), this);
+  undoAction->setShortcuts(QKeySequence::Undo);
+  connect(undoAction, &QAction::triggered, this, &MainWindow::undo);
+  addAction(undoAction);
+  auto* redoAction = new QAction(tr("Redo"), this);
+  redoAction->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Y), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z)});
+  connect(redoAction, &QAction::triggered, this, &MainWindow::redo);
+  addAction(redoAction);
+
   buildAppMenu();
   loadDemoDocument();
   resize(1440, 900);
+}
+
+MainWindow::~MainWindow() {
+  viewport_->setTool(nullptr);
+  sketchEditor_.reset();
+  planePicker_.reset();
+  profilePicker_.reset();
 }
 
 void MainWindow::buildAppMenu() {
@@ -280,7 +363,13 @@ void MainWindow::layoutOverlays(bool animate) {
 // ---- Commands -----------------------------------------------------------------
 
 void MainWindow::onTool(const QString& id) {
-  if (id == "design.box") {
+  if (id.startsWith("sketch.")) {
+    onSketchTool(id);
+  } else if (id == "design.sketch") {
+    openCreateSketch();
+  } else if (id == "design.extrude") {
+    openExtrudeDialog();
+  } else if (id == "design.box") {
     openBoxDialog();
   } else if (id == "design.fillet") {
     openFilletDialog();
@@ -303,6 +392,7 @@ void MainWindow::showDialog(CommandDialog* dialog) {
 }
 
 void MainWindow::closeDialog() {
+  cancelPickers();
   if (CommandDialog* d = dialog_) {
     d->setEnabled(false);
     anim::fadeOut(d, [d] { d->deleteLater(); });
@@ -325,6 +415,7 @@ void MainWindow::openBoxDialog() {
   LengthField* x = d->addLength(tr("Corner X"), 3.0 * kInch, unit);
   LengthField* y = d->addLength(tr("Corner Y"), -0.5 * kInch, unit);
   connect(d, &CommandDialog::accepted, this, [=, this] {
+    pushUndo();
     const int n = int(model::timeline_len(*timeline_)) + 1;
     const std::string name = QString("Box %1").arg(n).toStdString();
     model::timeline_add_extrude(*timeline_, name,
@@ -341,6 +432,7 @@ void MainWindow::openFilletDialog() {
   LengthField* radius = d->addLength(tr("Radius"), 0.03 * kInch, model::timeline_units(*timeline_), 0.001);
   d->addChoice(tr("Edges"), {tr("All edges")});
   connect(d, &CommandDialog::accepted, this, [=, this] {
+    pushUndo();
     model::timeline_add_fillet(*timeline_, "Fillet", radius->valueMm());
     closeDialog();
     rebuildModel();
@@ -456,7 +548,9 @@ void MainWindow::rebuildModel(bool fit) {
   for (std::size_t i : failed) failed_.push_back(i);
 
   viewport_->showBody(body_);
+  previewing_ = false;
   if (fit) viewport_->fitAll();
+  showSketches();
 
   refreshTimeline();
   refreshBrowser();
@@ -505,7 +599,9 @@ void MainWindow::refreshBrowser() {
   QTreeWidgetItem* sketches = add(root, tr("Sketches"), "folder");
   for (std::size_t i = 0; i < model::timeline_marker(*timeline_); ++i) {
     if (toQString(model::timeline_feature_type(*timeline_, i)) != "Sketch") continue;
-    add(sketches, toQString(model::timeline_feature_name(*timeline_, i)), "sketch");
+    QTreeWidgetItem* item = add(sketches, toQString(model::timeline_feature_name(*timeline_, i)), "sketch");
+    item->setData(0, kFeatureRole, QVariant::fromValue<qulonglong>(model::timeline_feature_id(*timeline_, i)));
+    item->setToolTip(0, tr("Double-click to edit"));
   }
   QTreeWidgetItem* bodies = add(root, tr("Bodies"), "folder");
   if (!body_.IsNull()) {
@@ -519,6 +615,8 @@ void MainWindow::refreshBrowser() {
 }
 
 void MainWindow::setMarker(long marker) {
+  if (sketchEditor_) finishSketch();
+  closeDialog();
   marker = std::clamp(marker, 0L, long(model::timeline_len(*timeline_)));
   model::timeline_set_marker(*timeline_, std::size_t(marker));
   rebuildModel();
@@ -543,4 +641,335 @@ void MainWindow::showAbout() {
               "<p>Geometry by Open CASCADE Technology %5 (LGPL-2.1).<br>UI by Qt %6 (LGPL-3.0).</p>")
           .arg(branding::kDisplayName, branding::kVersion, branding::kTagline, branding::kRepoUrl,
                OCC_VERSION_COMPLETE, qVersion()));
+}
+
+// ---- Undo / redo -------------------------------------------------------------------
+
+void MainWindow::pushUndo() {
+  undo_.push_back(model::timeline_clone(*timeline_));
+  redo_.clear();
+  constexpr std::size_t kMaxUndo = 200;
+  if (undo_.size() > kMaxUndo) undo_.erase(undo_.begin());
+}
+
+void MainWindow::undo() {
+  if (undo_.empty()) {
+    timelineBar_->showStatus(tr("Nothing to undo"));
+    return;
+  }
+  redo_.push_back(model::timeline_clone(*timeline_));
+  timeline_ = std::move(undo_.back());
+  undo_.pop_back();
+  afterHistoryChange();
+}
+
+void MainWindow::redo() {
+  if (redo_.empty()) {
+    timelineBar_->showStatus(tr("Nothing to redo"));
+    return;
+  }
+  undo_.push_back(model::timeline_clone(*timeline_));
+  timeline_ = std::move(redo_.back());
+  redo_.pop_back();
+  afterHistoryChange();
+}
+
+void MainWindow::afterHistoryChange() {
+  if (dialog_) closeDialog();
+  if (sketchEditor_) {
+    if (model::timeline_index_of(*timeline_, sketchEditor_->sketch()) == SIZE_MAX) {
+      // The open sketch was undone away.
+      sketchReturnMarker_ = -1;
+      finishSketch();
+      return;
+    }
+    sketchEditor_->reload();
+  }
+  rebuildModel();
+}
+
+// ---- Sketching ---------------------------------------------------------------------
+
+QVector<std::uint64_t> MainWindow::sketchIds(bool unconsumedOnly) const {
+  QVector<std::uint64_t> ids;
+  const std::size_t end = std::min(model::timeline_marker(*timeline_), model::timeline_len(*timeline_));
+  for (std::size_t i = 0; i < end; ++i) {
+    if (toQString(model::timeline_feature_type(*timeline_, i)) != "Sketch") continue;
+    const std::uint64_t id = model::timeline_feature_id(*timeline_, i);
+    if (unconsumedOnly && model::timeline_sketch_consumed(*timeline_, id)) continue;
+    ids.push_back(id);
+  }
+  return ids;
+}
+
+void MainWindow::showSketches() {
+  // Sketches not yet used by a feature stay visible (thin), like Fusion.
+  if (sketchEditor_ || profilePicker_) {
+    viewport_->clearOverlay("sketches");
+    return;
+  }
+  const theme::Palette& pal = theme::current();
+  Overlay o;
+  for (std::uint64_t id : sketchIds(/*unconsumedOnly=*/true)) {
+    try {
+      const geom::Plane plane = toGeomPlane(model::sketch_plane(*timeline_, id));
+      o.curves.push_back({sketchCurves(*timeline_, id, plane), pal.highlight, 1.5, false});
+      for (const auto& p : model::sketch_profiles(*timeline_, id))
+        o.faces.push_back({geom::makePolygonFace(plane, profileLoops(p)), pal.highlight, 0.88});
+    } catch (const std::exception&) {
+    }
+  }
+  viewport_->setOverlay("sketches", o);
+}
+
+void MainWindow::cancelPickers() {
+  if (planePicker_ || profilePicker_) {
+    viewport_->setTool(sketchEditor_ ? static_cast<ViewportTool*>(sketchEditor_.get()) : nullptr);
+  }
+  planePicker_.reset();
+  const bool hadProfiles = bool(profilePicker_);
+  profilePicker_.reset();
+  if (previewing_ || hadProfiles) {
+    previewing_ = false;
+    viewport_->showBody(body_);
+    showSketches();
+  }
+  ribbon_->setActiveTool({});
+}
+
+void MainWindow::openCreateSketch() {
+  if (sketchEditor_) return;
+  auto* d = new CommandDialog(tr("Create Sketch"), viewport_);
+  QComboBox* plane = d->addChoice(tr("Plane"), {tr("XY (Top)"), tr("XZ (Front)"), tr("YZ (Right)")});
+  d->addInfo(tr("Or"), tr("click a plane in the view"));
+  connect(d, &CommandDialog::accepted, this, [this, plane] {
+    const model::OriginPlaneKind kinds[] = {model::OriginPlaneKind::XY, model::OriginPlaneKind::XZ,
+                                            model::OriginPlaneKind::YZ};
+    createSketch(kinds[std::clamp(plane->currentIndex(), 0, 2)]);
+  });
+  showDialog(d);
+  planePicker_ = std::make_unique<PlanePicker>(viewport_, 2.0 * kInch, [this](model::OriginPlaneKind k) {
+    QTimer::singleShot(0, this, [this, k] { createSketch(k); });
+  });
+  viewport_->setTool(planePicker_.get());
+  ribbon_->setActiveTool("design.sketch");
+  timelineBar_->showStatus(tr("Pick a plane for the sketch"));
+}
+
+void MainWindow::createSketch(model::OriginPlaneKind plane) {
+  closeDialog();
+  pushUndo();
+  const int n = int(sketchIds(false).size()) + 1;
+  const std::uint64_t id =
+      model::timeline_add_sketch(*timeline_, QString("Sketch %1").arg(n).toStdString(), plane);
+  rebuildModel();
+  enterSketch(id);
+}
+
+void MainWindow::enterSketch(std::uint64_t sketch) {
+  if (sketchEditor_) {
+    if (sketchEditor_->sketch() == sketch) return;
+    finishSketch();
+  }
+  closeDialog();
+  const std::size_t index = model::timeline_index_of(*timeline_, sketch);
+  if (index == SIZE_MAX) return;
+
+  // Editing an older sketch: roll the timeline back to just after it.
+  sketchReturnMarker_ = -1;
+  if (index + 1 < model::timeline_marker(*timeline_)) {
+    sketchReturnMarker_ = long(model::timeline_marker(*timeline_));
+    model::timeline_set_marker(*timeline_, index + 1);
+  }
+
+  SketchEditor::Host host{
+      [this]() -> model::Timeline& { return *timeline_; },
+      [this](rust::Box<model::Timeline> before) {
+        undo_.push_back(std::move(before));
+        redo_.clear();
+      },
+      [this](rust::Box<model::Timeline> before) { timeline_ = std::move(before); },
+  };
+  ribbon_->setWorkspaces(sketchWorkspace());
+  sketchEditor_ = std::make_unique<SketchEditor>(viewport_, std::move(host), sketch, this);
+  SketchEditor* ed = sketchEditor_.get();
+  connect(ed, &SketchEditor::message, this, [this](const QString& m) { timelineBar_->showStatus(m, 6000); });
+  connect(ed, &SketchEditor::edited, this, [this] {
+    refreshTimeline();
+    refreshBrowser();
+  });
+  connect(ed, &SketchEditor::finishRequested, this, [this] { QTimer::singleShot(0, this, &MainWindow::finishSketch); });
+  connect(ed, &SketchEditor::solveStateChanged, this, [this](int dof, bool conflicting) {
+    QString text;
+    if (conflicting) text = tr("Sketch: conflicting constraints");
+    else if (dof == 0) text = tr("Sketch: fully constrained");
+    else if (dof > 0) text = tr("Sketch: %n degree(s) of freedom", nullptr, dof);
+    timelineBar_->setPermanentStatus(text);
+  });
+  connect(ed, &SketchEditor::modeChanged, this, [this, ed](SketchEditor::Mode m) {
+    QString id;
+    switch (m) {
+      case SketchEditor::Mode::Select: id = "sketch.select"; break;
+      case SketchEditor::Mode::Line: id = "sketch.line"; break;
+      case SketchEditor::Mode::Rectangle: id = "sketch.rectangle"; break;
+      case SketchEditor::Mode::Circle: id = "sketch.circle"; break;
+      case SketchEditor::Mode::Arc: id = "sketch.arc"; break;
+      case SketchEditor::Mode::Point: id = "sketch.point"; break;
+      case SketchEditor::Mode::Dimension: id = "sketch.dimension"; break;
+      case SketchEditor::Mode::Constrain:
+        for (const auto& t : kConstraintTools)
+          if (t.kind == ed->constraintKind()) id = t.id;
+        break;
+    }
+    ribbon_->setActiveTool(id);
+  });
+  viewport_->setTool(ed);
+  viewport_->setBodyTransparency(0.75);  // see the sketch through the model
+  ed->reload();  // emits the solve state with the connections in place
+  ed->setMode(SketchEditor::Mode::Select);
+
+  rebuildModel();
+  try {
+    const model::PlaneInfo p = model::sketch_plane(*timeline_, sketch);
+    viewport_->lookAlong(gp_Dir(p.normal[0], p.normal[1], p.normal[2]),
+                         gp_Dir(p.y_axis[0], p.y_axis[1], p.y_axis[2]));
+    QTimer::singleShot(450, ed, [ed] { ed->viewChanged(); });
+  } catch (const std::exception&) {
+  }
+  timelineBar_->showStatus(tr("Editing %1. Press L for a line, D to dimension, Finish Sketch when done.")
+                               .arg(toQString(model::timeline_feature_name(*timeline_, index))),
+                           6000);
+}
+
+void MainWindow::finishSketch() {
+  if (!sketchEditor_) return;
+  viewport_->setTool(nullptr);
+  sketchEditor_.reset();
+  if (sketchReturnMarker_ >= 0) {
+    model::timeline_set_marker(*timeline_,
+                               std::min(std::size_t(sketchReturnMarker_), model::timeline_len(*timeline_)));
+  }
+  sketchReturnMarker_ = -1;
+  viewport_->setBodyTransparency(0.0);
+  ribbon_->setWorkspaces(workspaces());
+  timelineBar_->setPermanentStatus(permanentStatus_);
+  rebuildModel();
+}
+
+void MainWindow::onSketchTool(const QString& id) {
+  SketchEditor* ed = sketchEditor_.get();
+  if (!ed) return;
+  using M = SketchEditor::Mode;
+  if (id == "sketch.finish") {
+    finishSketch();
+  } else if (id == "sketch.line") {
+    ed->setMode(M::Line);
+  } else if (id == "sketch.rectangle") {
+    ed->setMode(M::Rectangle);
+  } else if (id == "sketch.circle") {
+    ed->setMode(M::Circle);
+  } else if (id == "sketch.arc") {
+    ed->setMode(M::Arc);
+  } else if (id == "sketch.point") {
+    ed->setMode(M::Point);
+  } else if (id == "sketch.dimension") {
+    ed->setMode(M::Dimension);
+  } else if (id == "sketch.select") {
+    ed->setMode(M::Select);
+  } else if (id == "sketch.construction") {
+    ed->toggleConstruction();
+  } else if (id == "sketch.delete") {
+    ed->deleteSelection();
+  } else {
+    for (const auto& t : kConstraintTools)
+      if (id == t.id) ed->setConstraint(t.kind);
+  }
+  viewport_->setFocus();
+}
+
+// ---- Extrude -----------------------------------------------------------------------
+
+void MainWindow::openExtrudeDialog() {
+  if (sketchEditor_) finishSketch();
+  QVector<std::uint64_t> sketches = sketchIds(/*unconsumedOnly=*/true);
+  if (sketches.isEmpty()) sketches = sketchIds(false);
+  if (sketches.isEmpty()) {
+    timelineBar_->showStatus(tr("Create a sketch with a closed shape first"));
+    return;
+  }
+
+  const model::LengthUnitKind unit = model::timeline_units(*timeline_);
+  auto* d = new CommandDialog(tr("Extrude"), viewport_);
+  QLabel* count = d->addInfo(tr("Profiles"), tr("Click a profile"));
+  LengthField* distance = d->addLength(tr("Distance"), 1.0 * kInch, unit, 0.001);
+  QComboBox* direction = d->addChoice(tr("Direction"), {tr("One side"), tr("Flipped")});
+  QComboBox* operation = d->addChoice(tr("Operation"), {tr("Join"), tr("Cut"), tr("New Body")});
+
+  auto op = [operation] {
+    switch (operation->currentIndex()) {
+      case 1: return model::BodyOp::Cut;
+      case 2: return model::BodyOp::NewBody;
+      default: return model::BodyOp::Join;
+    }
+  };
+  auto signedDistance = [distance, direction] {
+    return distance->valueMm() * (direction->currentIndex() == 1 ? -1.0 : 1.0);
+  };
+  auto keysVec = [](const QStringList& keys) {
+    rust::Vec<rust::String> v;
+    for (const QString& k : keys) v.push_back(rust::String(k.toStdString()));
+    return v;
+  };
+
+  auto preview = [=, this] {
+    if (!profilePicker_ || profilePicker_->keys().isEmpty()) {
+      previewing_ = false;
+      viewport_->showBody(body_);
+      return;
+    }
+    rust::Box<model::Timeline> copy = model::timeline_clone(*timeline_);
+    model::timeline_add_extrude_sketch(*copy, "Preview", profilePicker_->sketch(), keysVec(profilePicker_->keys()),
+                                       signedDistance(), op());
+    rust::Vec<std::size_t> failed;
+    const std::unique_ptr<model::Shape> shape = model::timeline_rebuild(*copy, failed);
+    previewing_ = true;
+    viewport_->showBody(shape ? shape->value : TopoDS_Shape());
+    if (!failed.empty()) timelineBar_->showStatus(tr("That extrude can't be computed"));
+  };
+
+  connect(distance, &LengthField::valueChanged, this, [preview](double) { preview(); });
+  connect(direction, &QComboBox::currentIndexChanged, this, [preview](int) { preview(); });
+  connect(operation, &QComboBox::currentIndexChanged, this, [preview](int) { preview(); });
+  connect(d, &CommandDialog::accepted, this, [=, this] {
+    if (!profilePicker_ || profilePicker_->keys().isEmpty()) {
+      timelineBar_->showStatus(tr("Pick at least one profile"));
+      return;
+    }
+    const std::uint64_t sketch = profilePicker_->sketch();
+    const QStringList keys = profilePicker_->keys();
+    const double dist = signedDistance();
+    const model::BodyOp bodyOp = op();
+    closeDialog();
+    pushUndo();
+    int n = 1;
+    for (std::size_t i = 0; i < model::timeline_len(*timeline_); ++i)
+      if (toQString(model::timeline_feature_type(*timeline_, i)) == "Extrude") ++n;
+    model::timeline_add_extrude_sketch(*timeline_, QString("Extrude %1").arg(n).toStdString(), sketch,
+                                       keysVec(keys), dist, bodyOp);
+    rebuildModel();
+  });
+
+  showDialog(d);  // closes any earlier command (and its pickers)
+  viewport_->clearOverlay("sketches");
+  std::vector<std::uint64_t> ids(sketches.begin(), sketches.end());
+  profilePicker_ = std::make_unique<ProfilePicker>(
+      viewport_, *timeline_, ids, [count, preview](std::uint64_t, const QStringList& keys) {
+        count->setText(keys.isEmpty() ? QObject::tr("Click a profile")
+                                      : QObject::tr("%n selected", nullptr, int(keys.size())));
+        preview();
+      });
+  viewport_->setTool(profilePicker_.get());
+  ribbon_->setActiveTool("design.extrude");
+  profilePicker_->selectIfSingle();
+  if (profilePicker_->profileCount() == 0) timelineBar_->showStatus(tr("No closed profiles in the visible sketches"));
 }

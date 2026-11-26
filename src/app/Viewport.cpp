@@ -2,6 +2,8 @@
 
 #include <AIS_AnimationCamera.hxx>
 #include <AIS_MouseGesture.hxx>
+#include <AIS_TextLabel.hxx>
+#include <Font_NameOfFont.hxx>
 #include <Aspect_DisplayConnection.hxx>
 #include <Aspect_Grid.hxx>
 #include <Aspect_NeutralWindow.hxx>
@@ -16,11 +18,16 @@
 #include <OpenGl_Window.hxx>
 #include <Graphic3d_Camera.hxx>
 #include <Prs3d_Drawer.hxx>
+#include <Prs3d_LineAspect.hxx>
+#include <Prs3d_PointAspect.hxx>
+#include <Prs3d_ShadingAspect.hxx>
+#include <TCollection_ExtendedString.hxx>
 #include <Quantity_Color.hxx>
 #include <V3d_TypeOfOrientation.hxx>
 
 #include "Theme.h"
 
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QWindow>
 
@@ -353,6 +360,7 @@ void Viewport::showBody(const TopoDS_Shape& body) {
   if (!body.IsNull()) {
     body_ = new AIS_Shape(body);
     body_->SetColor(Quantity_Color(0.73, 0.75, 0.78, Quantity_TOC_sRGB));
+    if (bodyTransparency_ > 0.0) body_->SetTransparency(bodyTransparency_);
     if (bodyVisible_) context_->Display(body_, AIS_Shaded, 0, false);
     applyDisplayMode();
   }
@@ -376,6 +384,8 @@ void Viewport::fitAll(bool animate) {
 
 void Viewport::mousePressEvent(QMouseEvent* e) {
   QOpenGLWidget::mousePressEvent(e);
+  setFocus();
+  if (tool_ && (e->button() == Qt::LeftButton || e->button() == Qt::RightButton) && tool_->mousePress(e)) return;
   if (!view_.IsNull() &&
       UpdateMouseButtons(toPoint(e->position(), devicePixelRatioF()), toVKeyMouse(e->buttons()),
                          toVKeyFlags(e->modifiers()), false)) {
@@ -385,6 +395,7 @@ void Viewport::mousePressEvent(QMouseEvent* e) {
 
 void Viewport::mouseReleaseEvent(QMouseEvent* e) {
   QOpenGLWidget::mouseReleaseEvent(e);
+  if (tool_ && (e->button() == Qt::LeftButton || e->button() == Qt::RightButton) && tool_->mouseRelease(e)) return;
   if (!view_.IsNull() &&
       UpdateMouseButtons(toPoint(e->position(), devicePixelRatioF()), toVKeyMouse(e->buttons()),
                          toVKeyFlags(e->modifiers()), false)) {
@@ -394,6 +405,7 @@ void Viewport::mouseReleaseEvent(QMouseEvent* e) {
 
 void Viewport::mouseMoveEvent(QMouseEvent* e) {
   QOpenGLWidget::mouseMoveEvent(e);
+  if (tool_ && tool_->mouseMove(e) && !(e->buttons() & Qt::MiddleButton)) return;
   if (!view_.IsNull() &&
       UpdateMousePosition(toPoint(e->position(), devicePixelRatioF()), toVKeyMouse(e->buttons()),
                           toVKeyFlags(e->modifiers()), false)) {
@@ -408,6 +420,139 @@ void Viewport::wheelEvent(QWheelEvent* e) {
   if (UpdateZoom(Aspect_ScrollDelta(pos, double(e->angleDelta().y()) / 8.0))) {
     update();
   }
+  if (tool_) tool_->viewChanged();
+}
+
+void Viewport::mouseDoubleClickEvent(QMouseEvent* e) {
+  if (tool_ && e->button() == Qt::LeftButton && tool_->mouseDoubleClick(e)) return;
+  QOpenGLWidget::mouseDoubleClickEvent(e);
+}
+
+void Viewport::keyPressEvent(QKeyEvent* e) {
+  if (tool_ && tool_->keyPress(e)) return;
+  QOpenGLWidget::keyPressEvent(e);
+}
+
+void Viewport::setTool(ViewportTool* tool) {
+  tool_ = tool;
+  setCursor(tool ? Qt::CrossCursor : Qt::ArrowCursor);
+  if (!tool) setupMouseGestures();
+  else {
+    // Left-drag belongs to the tool; keep middle-drag navigation.
+    auto& map = ChangeMouseGestureMap();
+    map.UnBind(Aspect_VKeyMouse_LeftButton);
+  }
+}
+
+namespace {
+
+Quantity_Color occtColor(const QColor& c) {
+  return Quantity_Color(c.redF(), c.greenF(), c.blueF(), Quantity_TOC_sRGB);
+}
+
+}  // namespace
+
+void Viewport::clearOverlay(const QString& layer) {
+  auto it = overlays_.find(layer);
+  if (it == overlays_.end()) return;
+  for (const auto& obj : *it) context_->Remove(obj, false);
+  overlays_.erase(it);
+  view_->Invalidate();
+  update();
+}
+
+void Viewport::setOverlay(const QString& layer, const Overlay& o) {
+  if (auto it = overlays_.find(layer); it != overlays_.end()) {
+    for (const auto& obj : *it) context_->Remove(obj, false);
+  }
+  std::vector<Handle(AIS_InteractiveObject)>& objects = overlays_[layer];
+  objects.clear();
+
+  auto show = [&](const Handle(AIS_InteractiveObject)& obj, int mode, Graphic3d_ZLayerId z) {
+    obj->SetZLayer(z);
+    context_->Display(obj, mode, -1, false);  // -1: not selectable
+    objects.push_back(obj);
+  };
+
+  for (const Overlay::Face& f : o.faces) {
+    if (f.shape.IsNull()) continue;
+    Handle(AIS_Shape) s = new AIS_Shape(f.shape);
+    s->SetColor(occtColor(f.color));
+    s->SetTransparency(f.transparency);
+    s->Attributes()->SetFaceBoundaryDraw(false);
+    show(s, AIS_Shaded, Graphic3d_ZLayerId_Topmost);
+  }
+  for (const Overlay::Curves& c : o.curves) {
+    if (c.shape.IsNull()) continue;
+    Handle(AIS_Shape) s = new AIS_Shape(c.shape);
+    Handle(Prs3d_LineAspect) line =
+        new Prs3d_LineAspect(occtColor(c.color), c.dashed ? Aspect_TOL_DASH : Aspect_TOL_SOLID, c.width);
+    s->Attributes()->SetWireAspect(line);
+    s->Attributes()->SetLineAspect(line);
+    s->Attributes()->SetFreeBoundaryAspect(line);
+    s->Attributes()->SetUnFreeBoundaryAspect(line);
+    show(s, AIS_WireFrame, Graphic3d_ZLayerId_Topmost);
+  }
+  for (const Overlay::Points& p : o.points) {
+    if (p.shape.IsNull()) continue;
+    Handle(AIS_Shape) s = new AIS_Shape(p.shape);
+    s->Attributes()->SetPointAspect(new Prs3d_PointAspect(Aspect_TOM_O_POINT, occtColor(p.color), p.size));
+    show(s, AIS_WireFrame, Graphic3d_ZLayerId_Topmost);
+  }
+  for (const Overlay::Label& l : o.labels) {
+    Handle(AIS_TextLabel) t = new AIS_TextLabel();
+    t->SetText(TCollection_ExtendedString(l.text.toUtf8().constData(), Standard_True));
+    t->SetPosition(l.position);
+    t->SetColor(occtColor(l.color));
+    t->SetHeight(l.height * devicePixelRatioF());
+    t->SetFont(Font_NOF_SANS_SERIF);
+    t->SetFontAspect(Font_FA_Bold);
+    if (l.background.isValid()) {
+      t->SetDisplayType(Aspect_TODT_SUBTITLE);
+      t->SetColorSubTitle(occtColor(l.background));
+    }
+    t->SetHJustification(Graphic3d_HTA_CENTER);
+    t->SetVJustification(Graphic3d_VTA_CENTER);
+    show(t, 0, Graphic3d_ZLayerId_Topmost);
+  }
+  view_->Invalidate();
+  update();
+}
+
+std::pair<gp_Pnt, gp_Dir> Viewport::rayAt(const QPointF& pos) const {
+  const qreal dpr = devicePixelRatioF();
+  double x, y, z, vx, vy, vz;
+  view_->ConvertWithProj(int(pos.x() * dpr), int(pos.y() * dpr), x, y, z, vx, vy, vz);
+  return {gp_Pnt(x, y, z), gp_Dir(vx, vy, vz)};
+}
+
+QPointF Viewport::project(const gp_Pnt& p) const {
+  int xp = 0, yp = 0;
+  view_->Convert(p.X(), p.Y(), p.Z(), xp, yp);
+  const qreal dpr = devicePixelRatioF();
+  return QPointF(xp / dpr, yp / dpr);
+}
+
+void Viewport::lookAlong(const gp_Dir& normal, const gp_Dir& up) {
+  auto apply = [this, normal, up] {
+    view_->SetProj(normal.X(), normal.Y(), normal.Z());
+    view_->SetUp(up.X(), up.Y(), up.Z());
+    view_->FitAll(0.25, false);
+  };
+  if (view_->Window().IsNull()) {
+    apply();
+    return;
+  }
+  animateCamera(apply);
+}
+
+void Viewport::setBodyTransparency(double transparency) {
+  bodyTransparency_ = transparency;
+  if (body_.IsNull()) return;
+  body_->SetTransparency(transparency);
+  context_->Redisplay(body_, false);
+  view_->Invalidate();
+  update();
 }
 
 void Viewport::handleViewRedraw(const Handle(AIS_InteractiveContext)& ctx,

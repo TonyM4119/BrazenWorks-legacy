@@ -3,6 +3,9 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS_Compound.hxx>
 #include <GC_MakeArcOfCircle.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <ShapeFix_Face.hxx>
@@ -121,6 +124,54 @@ TopoDS_Shape extrudeRegion(const Plane& plane, const Loop2& outer, const std::ve
   const gp_Vec v(plane.normal[0] * distance, plane.normal[1] * distance, plane.normal[2] * distance);
   BRepPrimAPI_MakePrism prism(face, v);
   return prism.IsDone() ? prism.Shape() : TopoDS_Shape();
+}
+
+TopoDS_Shape makeCurves(const Plane& plane, const std::vector<Seg2>& segments) {
+  BRep_Builder builder;
+  TopoDS_Compound compound;
+  builder.MakeCompound(compound);
+  for (const Seg2& s : segments) {
+    try {
+      const TopoDS_Edge e = makeEdge(plane, s);
+      if (!e.IsNull()) builder.Add(compound, e);
+    } catch (const Standard_Failure&) {
+      // Skip degenerate preview geometry (zero-length line, collinear arc points).
+    }
+  }
+  return compound;
+}
+
+TopoDS_Shape makeVertices(const Plane& plane, const std::vector<Point2>& points) {
+  BRep_Builder builder;
+  TopoDS_Compound compound;
+  builder.MakeCompound(compound);
+  for (const Point2& p : points) builder.Add(compound, BRepBuilderAPI_MakeVertex(worldPoint(plane, p[0], p[1])).Vertex());
+  return compound;
+}
+
+TopoDS_Shape makePolygonFace(const Plane& plane, const std::vector<std::vector<Point2>>& loops) {
+  if (loops.empty() || loops[0].size() < 3) return {};
+  try {
+    auto wire = [&plane](const std::vector<Point2>& pts) {
+      BRepBuilderAPI_MakePolygon poly;
+      for (const Point2& p : pts) poly.Add(worldPoint(plane, p[0], p[1]));
+      poly.Close();
+      return poly.IsDone() ? poly.Wire() : TopoDS_Wire();
+    };
+    const TopoDS_Wire outer = wire(loops[0]);
+    if (outer.IsNull()) return {};
+    const gp_Pln pln(gp_Ax3(worldPoint(plane, 0, 0), dir(plane.normal), dir(plane.xAxis)));
+    BRepBuilderAPI_MakeFace face(pln, outer, Standard_True);
+    for (std::size_t i = 1; i < loops.size(); ++i) {
+      if (loops[i].size() < 3) continue;
+      const TopoDS_Wire w = wire(loops[i]);
+      if (!w.IsNull()) face.Add(TopoDS::Wire(w.Reversed()));
+    }
+    if (!face.IsDone()) return {};
+    return face.Face();
+  } catch (const Standard_Failure&) {
+    return {};
+  }
 }
 
 double area(const TopoDS_Shape& shape) {

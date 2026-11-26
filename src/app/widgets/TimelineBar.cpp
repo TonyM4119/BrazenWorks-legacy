@@ -7,12 +7,18 @@
 #include <QLabel>
 #include <QScrollArea>
 #include <QStyle>
+#include <QApplication>
 #include <QTimer>
 #include <QToolButton>
 
 TimelineBar::TimelineBar(QWidget* parent) : QFrame(parent) {
   setObjectName("Timeline");
   setAttribute(Qt::WA_StyledBackground);
+  pendingClick_.setSingleShot(true);
+  connect(&pendingClick_, &QTimer::timeout, this, [this] {
+    if (pendingChip_ >= 0) emit markerRequested(pendingChip_ + 1);
+    pendingChip_ = -1;
+  });
   setFixedHeight(48);
 
   auto* row = new QHBoxLayout(this);
@@ -63,7 +69,10 @@ void TimelineBar::setFeatures(const QVector<Chip>& chips, int marker) {
   count_ = int(chips.size());
   while (chips_->count() > 1) {  // keep the trailing stretch
     QLayoutItem* item = chips_->takeAt(0);
-    delete item->widget();
+    if (QWidget* w = item->widget()) {
+      w->hide();
+      w->deleteLater();  // may be the chip whose click got us here
+    }
     delete item;
   }
 
@@ -85,11 +94,30 @@ void TimelineBar::setFeatures(const QVector<Chip>& chips, int marker) {
     b->setIcon(icons::get(c.icon, 18));
     b->setIconSize(QSize(18, 18));
     b->setFixedSize(32, 32);
-    b->setToolTip(QString("%1: %2%3").arg(c.type, c.name, c.failed ? tr(" (could not compute)") : QString()));
+    b->setToolTip(QString("%1: %2%3%4")
+                      .arg(c.type, c.name, c.failed ? tr(" (could not compute)") : QString(),
+                           c.type == "Sketch" ? tr("\nDouble-click to edit") : QString()));
+
     b->setProperty("sketch", c.type == "Sketch");
     b->setProperty("rolledBack", i >= marker);
     b->setProperty("failed", c.failed);
-    connect(b, &QToolButton::clicked, this, [this, i] { emit markerRequested(i + 1); });
+    if (c.type == "Sketch") {
+      // Sketch chips: a second click within the double-click time edits the
+      // sketch instead of moving the marker (chips are rebuilt on every change,
+      // so Qt's own double-click never reaches them).
+      connect(b, &QToolButton::clicked, this, [this, i] {
+        if (pendingChip_ == i && pendingClick_.isActive()) {
+          pendingClick_.stop();
+          pendingChip_ = -1;
+          emit featureDoubleClicked(i);
+          return;
+        }
+        pendingChip_ = i;
+        pendingClick_.start(QApplication::doubleClickInterval());
+      });
+    } else {
+      connect(b, &QToolButton::clicked, this, [this, i] { emit markerRequested(i + 1); });
+    }
     chips_->insertWidget(pos++, b);
   }
   if (marker >= count_) addMarker(pos);
@@ -97,12 +125,16 @@ void TimelineBar::setFeatures(const QVector<Chip>& chips, int marker) {
 
 void TimelineBar::setPermanentStatus(const QString& text) {
   permanentStatus_ = text;
-  status_->setText(text);
+  if (tempStatus_.isEmpty()) status_->setText(text);  // don't cut a message short
 }
 
 void TimelineBar::showStatus(const QString& text, int timeoutMs) {
   status_->setText(text);
+  tempStatus_ = text;
   QTimer::singleShot(timeoutMs, this, [this, text] {
-    if (status_->text() == text) status_->setText(permanentStatus_);
+    if (status_->text() == text) {
+      status_->setText(permanentStatus_);
+      tempStatus_.clear();
+    }
   });
 }
