@@ -38,4 +38,41 @@ std::unique_ptr<Shape> geom_fillet_all_edges(const Shape& shape, double radius) 
   return wrap(geom::filletAllEdges(shape.value, radius));
 }
 
+namespace {
+
+std::array<double, 3> arr(const std::array<double, 3>& a) { return a; }
+
+geom::Loop2 toLoop(const LoopData& data) {
+  geom::Loop2 loop;
+  for (const SegmentData& d : data.segments) {
+    geom::Seg2 s;
+    s.kind = d.kind == SegmentKind::Arc      ? geom::Seg2::Kind::Arc
+             : d.kind == SegmentKind::Circle ? geom::Seg2::Kind::Circle
+                                             : geom::Seg2::Kind::Line;
+    s.x0 = d.x0;
+    s.y0 = d.y0;
+    s.x1 = d.x1;
+    s.y1 = d.y1;
+    s.cx = d.cx;
+    s.cy = d.cy;
+    s.radius = d.radius;
+    s.ccw = d.ccw;
+    loop.push_back(s);
+  }
+  return loop;
+}
+
+}  // namespace
+
+std::unique_ptr<Shape> geom_extrude_region(const PlaneInfo& plane, const RegionData& region, double distance) {
+  geom::Plane p;
+  p.origin = arr(plane.origin);
+  p.xAxis = arr(plane.x_axis);
+  p.yAxis = arr(plane.y_axis);
+  p.normal = arr(plane.normal);
+  std::vector<geom::Loop2> holes;
+  for (const LoopData& h : region.holes) holes.push_back(toLoop(h));
+  return wrap(geom::extrudeRegion(p, toLoop(region.outer), holes, distance));
+}
+
 }  // namespace model

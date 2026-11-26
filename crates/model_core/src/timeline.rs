@@ -1,18 +1,31 @@
 //! The ordered feature history shown in the app's bottom timeline bar.
 
 use crate::kernel::{BodyOp, Kernel, Profile};
-use crate::sketch::Sketch;
+use crate::sketch::{find_region, RegionKey, Sketch};
 
 /// A feature's id: stable while the timeline is edited, never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FeatureId(pub u64);
+
+/// Where an extrude gets its shape.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExtrudeSource {
+    /// A fixed rectangle or circle on the XY plane (the Box tool).
+    Profile(Profile),
+    /// Profiles of an earlier sketch, by their stable keys; several are
+    /// extruded together.
+    Sketch {
+        sketch: FeatureId,
+        regions: Vec<RegionKey>,
+    },
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum FeatureKind {
     /// A 2D sketch. It doesn't change the body; later features use its profiles.
     Sketch(Box<Sketch>),
     Extrude {
-        profile: Profile,
+        source: ExtrudeSource,
         distance: f64,
         op: BodyOp,
     },
@@ -78,17 +91,23 @@ impl Feature {
         }
     }
 
-    /// Features are pure: given the body built so far, return the new body.
-    /// That makes rollback, reordering and dimension edits a simple replay.
-    fn apply<K: Kernel>(&self, kernel: &K, input: Option<&K::Shape>) -> Outcome<K::Shape> {
+    /// Features are pure: given the body built so far (and the features
+    /// before this one, for references), return the new body. That makes
+    /// rollback, reordering and dimension edits a simple replay.
+    fn apply<K: Kernel>(
+        &self,
+        kernel: &K,
+        input: Option<&K::Shape>,
+        earlier: &[Feature],
+    ) -> Outcome<K::Shape> {
         match &self.kind {
             FeatureKind::Sketch(_) => Outcome::Unchanged,
             FeatureKind::Extrude {
-                profile,
+                source,
                 distance,
                 op,
             } => {
-                let Some(tool) = kernel.extrude(profile, *distance) else {
+                let Some(tool) = extrude_tool(kernel, source, *distance, earlier) else {
                     return Outcome::Failed;
                 };
                 match (op, input) {
@@ -102,6 +121,36 @@ impl Feature {
                 Some(body) => kernel.fillet_all_edges(body, *radius).into(),
                 None => Outcome::Failed,
             },
+        }
+    }
+}
+
+/// The solid an extrude adds or removes. A sketch must come before the
+/// extrude that uses it, and every named profile must still exist.
+fn extrude_tool<K: Kernel>(
+    kernel: &K,
+    source: &ExtrudeSource,
+    distance: f64,
+    earlier: &[Feature],
+) -> Option<K::Shape> {
+    match source {
+        ExtrudeSource::Profile(profile) => kernel.extrude(profile, distance),
+        ExtrudeSource::Sketch { sketch, regions } => {
+            let feature = earlier.iter().find(|f| f.id == *sketch)?;
+            if feature.suppressed {
+                return None;
+            }
+            let sketch = feature.sketch()?;
+            let mut tool: Option<K::Shape> = None;
+            for key in regions {
+                let region = find_region(sketch, key)?;
+                let solid = kernel.extrude_region(&sketch.plane, &region, distance)?;
+                tool = Some(match tool {
+                    None => solid,
+                    Some(t) => kernel.fuse(&t, &solid)?,
+                });
+            }
+            tool
         }
     }
 }
@@ -201,7 +250,7 @@ impl Timeline {
             if feature.suppressed {
                 continue;
             }
-            match feature.apply(kernel, body.as_ref()) {
+            match feature.apply(kernel, body.as_ref(), &self.features[..i]) {
                 Outcome::Body(next) => body = Some(next),
                 Outcome::Unchanged => {}
                 Outcome::Failed => failed.push(i),
@@ -214,6 +263,7 @@ impl Timeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sketch::{find_regions, SketchConstraint, SketchPlane};
 
     /// Mock kernel: a "shape" is just its volume. Enough to test model logic.
     struct VolumeKernel;
@@ -242,6 +292,14 @@ mod tests {
         fn fillet_all_edges(&self, s: &f64, r: f64) -> Option<f64> {
             (r > 0.0 && r < 10.0).then(|| s * 0.99)
         }
+        fn extrude_region(
+            &self,
+            _: &SketchPlane,
+            region: &crate::sketch::Region,
+            d: f64,
+        ) -> Option<f64> {
+            (d != 0.0).then(|| region.area() * d.abs())
+        }
     }
 
     fn plate() -> Feature {
@@ -254,7 +312,7 @@ mod tests {
         Feature::new(
             "Base",
             FeatureKind::Extrude {
-                profile,
+                source: ExtrudeSource::Profile(profile),
                 distance: 5.0,
                 op: BodyOp::Join,
             },
@@ -270,7 +328,7 @@ mod tests {
         Feature::new(
             "Hole",
             FeatureKind::Extrude {
-                profile,
+                source: ExtrudeSource::Profile(profile),
                 distance: 5.0,
                 op: BodyOp::Cut,
             },
@@ -360,6 +418,118 @@ mod tests {
         );
         assert_eq!(tl.get(0).unwrap().type_name(), "Extrude");
         assert!(tl.find(FeatureId(3)).unwrap().sketch().is_some());
+    }
+
+    /// Sketch with a 40×20 rectangle (width dimensioned) and a hole of radius 3.
+    fn plate_sketch() -> (Sketch, crate::sketch::ConstraintId) {
+        let mut s = Sketch::new("Sketch1", SketchPlane::default());
+        let lines = s.add_rectangle([0.0, 0.0], [40.0, 20.0]).unwrap();
+        let corner = match s.entity(lines[0]).unwrap().geometry {
+            crate::sketch::Geometry::Line { start, .. } => start,
+            _ => unreachable!(),
+        };
+        s.add_constraint(SketchConstraint::Fix(corner)).unwrap();
+        let w = s
+            .add_constraint(SketchConstraint::Length {
+                line: lines[0],
+                value: 40.0,
+            })
+            .unwrap();
+        s.add_constraint(SketchConstraint::Length {
+            line: lines[1],
+            value: 20.0,
+        })
+        .unwrap();
+        s.add_circle_xy([20.0, 10.0], 3.0).unwrap();
+        (s, w)
+    }
+
+    fn sketch_extrude(
+        tl: &mut Timeline,
+        sketch: FeatureId,
+        regions: Vec<RegionKey>,
+        distance: f64,
+    ) -> usize {
+        let source = ExtrudeSource::Sketch { sketch, regions };
+        tl.insert(Feature::new(
+            "Extrude",
+            FeatureKind::Extrude {
+                source,
+                distance,
+                op: BodyOp::Join,
+            },
+        ))
+    }
+
+    #[test]
+    fn extrude_from_sketch_profiles_follows_dimension_edits() {
+        let (sketch, width) = plate_sketch();
+        let ring = find_regions(&sketch)[0].key.clone();
+        let mut tl = Timeline::new();
+        let si = tl.insert(Feature::new(
+            "Sketch1",
+            FeatureKind::Sketch(Box::new(sketch)),
+        ));
+        let sid = tl.get(si).unwrap().id;
+        sketch_extrude(&mut tl, sid, vec![ring.clone()], 5.0);
+
+        let ring_area = 800.0 - std::f64::consts::PI * 9.0;
+        let v = tl.rebuild(&VolumeKernel).body.unwrap();
+        assert!((v - ring_area * 5.0).abs() < 1e-9);
+
+        // Edit the sketch's width: the extrude follows.
+        tl.find_mut(sid)
+            .unwrap()
+            .sketch_mut()
+            .unwrap()
+            .set_dimension(width, 60.0)
+            .unwrap();
+        let v = tl.rebuild(&VolumeKernel).body.unwrap();
+        assert!((v - (1200.0 - std::f64::consts::PI * 9.0) * 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn extrude_several_profiles_together() {
+        let (sketch, _) = plate_sketch();
+        let keys: Vec<RegionKey> = find_regions(&sketch).into_iter().map(|r| r.key).collect();
+        let mut tl = Timeline::new();
+        let si = tl.insert(Feature::new(
+            "Sketch1",
+            FeatureKind::Sketch(Box::new(sketch)),
+        ));
+        let sid = tl.get(si).unwrap().id;
+        sketch_extrude(&mut tl, sid, keys, 2.0);
+        // Ring + disc = the whole rectangle.
+        assert!((tl.rebuild(&VolumeKernel).body.unwrap() - 1600.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn extrude_with_missing_profile_or_sketch_fails_cleanly() {
+        let (sketch, _) = plate_sketch();
+        let mut tl = Timeline::new();
+        let si = tl.insert(Feature::new(
+            "Sketch1",
+            FeatureKind::Sketch(Box::new(sketch)),
+        ));
+        let sid = tl.get(si).unwrap().id;
+        let bad = sketch_extrude(&mut tl, sid, vec![RegionKey("no-such-region".into())], 5.0);
+        let wrong_sketch = sketch_extrude(&mut tl, FeatureId(999), vec![], 5.0);
+        let r = tl.rebuild(&VolumeKernel);
+        assert_eq!(r.failed, vec![bad, wrong_sketch]);
+        assert!(r.body.is_none());
+    }
+
+    #[test]
+    fn extrude_cannot_use_a_later_sketch() {
+        let (sketch, _) = plate_sketch();
+        let key = find_regions(&sketch)[0].key.clone();
+        let mut tl = Timeline::new();
+        let ext = sketch_extrude(&mut tl, FeatureId(2), vec![key], 5.0); // sketch inserted next gets id 2
+        tl.insert(Feature::new(
+            "Sketch1",
+            FeatureKind::Sketch(Box::new(sketch)),
+        ));
+        assert_eq!(tl.rebuild(&VolumeKernel).failed, vec![ext]);
     }
 
     #[test]

@@ -42,6 +42,13 @@ names the ones it clashes with. A sketch is a timeline feature
 (`FeatureKind::Sketch`) that leaves the body unchanged; features have stable
 `FeatureId`s, which is how the UI and later features refer to a sketch.
 
+**Profiles** (`sketch/profiles.rs`). Finds the closed regions of a sketch:
+lines and arcs become a planar graph, faces are traced, circles are loops, and
+loops inside other groups become holes. Each region has a stable `RegionKey`
+built from curve ids. `ExtrudeSource::Sketch { sketch, regions }` extrudes
+regions by key; at rebuild the kernel builds the OCCT face on the sketch plane
+(`geom::extrudeRegion`). Areas are exact (analytic arc terms).
+
 **Sketch solver.** `crates/model_core/src/sketch/solver_adapter.rs` wraps the
 2D constraint solver (MitCad's `mitcad-solver`, MIT, pinned to a release tag)
 behind our own types (`ConstraintSolver`, `Rule`, `PointRef`…). It is the only

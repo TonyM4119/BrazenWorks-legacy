@@ -8,10 +8,10 @@
 
 use crate::kernel::{self, Kernel};
 use crate::sketch::{
-    ConstraintId, EntityId, Geometry, OriginPlane, Sketch, SketchConstraint, SketchError,
-    SketchPlane, SolveStatus, SolveSummary,
+    find_regions, ConstraintId, EntityId, Geometry, Loop, OriginPlane, Region, RegionKey, Segment,
+    Sketch, SketchConstraint, SketchError, SketchPlane, SolveStatus, SolveSummary,
 };
-use crate::timeline::{Feature, FeatureId, FeatureKind, Timeline};
+use crate::timeline::{ExtrudeSource, Feature, FeatureId, FeatureKind, Timeline};
 use cxx::UniquePtr;
 
 #[cxx::bridge(namespace = "model")]
@@ -138,6 +138,46 @@ mod bridge {
         message: String,
     }
 
+    // ---- Profiles ----
+
+    enum SegmentKind {
+        Line,
+        Arc,
+        Circle,
+    }
+
+    /// One oriented piece of a loop in sketch coordinates. Line/arc: start
+    /// (x0, y0) to end (x1, y1). Arc/circle: centre and radius.
+    struct SegmentData {
+        kind: SegmentKind,
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+        cx: f64,
+        cy: f64,
+        radius: f64,
+        ccw: bool,
+    }
+
+    struct LoopData {
+        segments: Vec<SegmentData>,
+    }
+
+    struct RegionData {
+        outer: LoopData,
+        holes: Vec<LoopData>,
+    }
+
+    /// A profile for the UI: its stable key, area and outline polygons
+    /// (x, y pairs; loop_sizes[0] points for the outer loop, then each hole).
+    struct ProfileInfo {
+        key: String,
+        area: f64,
+        outlines: Vec<f64>,
+        loop_sizes: Vec<usize>,
+    }
+
     unsafe extern "C++" {
         include!("GeometryBridge.h");
 
@@ -149,6 +189,11 @@ mod bridge {
         fn geom_fuse(a: &Shape, b: &Shape) -> UniquePtr<Shape>;
         fn geom_cut(a: &Shape, b: &Shape) -> UniquePtr<Shape>;
         fn geom_fillet_all_edges(shape: &Shape, radius: f64) -> UniquePtr<Shape>;
+        fn geom_extrude_region(
+            plane: &PlaneInfo,
+            region: &RegionData,
+            distance: f64,
+        ) -> UniquePtr<Shape>;
     }
 
     extern "Rust" {
@@ -251,6 +296,18 @@ mod bridge {
         ) -> Result<SketchSolveInfo>;
         fn sketch_entities(t: &mut Timeline, sketch: u64) -> Result<Vec<SketchEntityInfo>>;
         fn sketch_constraints(t: &mut Timeline, sketch: u64) -> Result<Vec<SketchConstraintInfo>>;
+
+        /// Closed regions of a sketch that can be extruded, largest first.
+        fn sketch_profiles(t: &Timeline, sketch: u64) -> Result<Vec<ProfileInfo>>;
+        /// Extrudes profiles (by key) of an earlier sketch; inserted at the marker.
+        fn timeline_add_extrude_sketch(
+            t: &mut Timeline,
+            name: &str,
+            sketch: u64,
+            profiles: Vec<String>,
+            distance: f64,
+            op: BodyOp,
+        ) -> usize;
     }
 }
 
@@ -322,6 +379,71 @@ impl Kernel for OcctKernel {
     fn fillet_all_edges(&self, shape: &Self::Shape, radius: f64) -> Option<Self::Shape> {
         non_null(bridge::geom_fillet_all_edges(shape.as_ref()?, radius))
     }
+    fn extrude_region(
+        &self,
+        plane: &SketchPlane,
+        region: &Region,
+        distance: f64,
+    ) -> Option<Self::Shape> {
+        let data = bridge::RegionData {
+            outer: loop_data(&region.outer),
+            holes: region.holes.iter().map(loop_data).collect(),
+        };
+        non_null(bridge::geom_extrude_region(
+            &plane_info(plane),
+            &data,
+            distance,
+        ))
+    }
+}
+
+fn plane_info(p: &SketchPlane) -> bridge::PlaneInfo {
+    bridge::PlaneInfo {
+        origin: p.origin,
+        x_axis: p.x_axis,
+        y_axis: p.y_axis,
+        normal: p.normal(),
+    }
+}
+
+fn loop_data(l: &Loop) -> bridge::LoopData {
+    let seg = |s: &Segment| {
+        let mut d = bridge::SegmentData {
+            kind: bridge::SegmentKind::Line,
+            x0: 0.0,
+            y0: 0.0,
+            x1: 0.0,
+            y1: 0.0,
+            cx: 0.0,
+            cy: 0.0,
+            radius: 0.0,
+            ccw: true,
+        };
+        match *s {
+            Segment::Line { a, b } => ([d.x0, d.y0], [d.x1, d.y1]) = (a, b),
+            Segment::Arc {
+                centre,
+                radius,
+                start,
+                end,
+                ccw,
+            } => {
+                d.kind = bridge::SegmentKind::Arc;
+                ([d.x0, d.y0], [d.x1, d.y1], [d.cx, d.cy]) = (start, end, centre);
+                d.radius = radius;
+                d.ccw = ccw;
+            }
+            Segment::Circle { centre, radius } => {
+                d.kind = bridge::SegmentKind::Circle;
+                [d.cx, d.cy] = centre;
+                d.radius = radius;
+            }
+        }
+        d
+    };
+    bridge::LoopData {
+        segments: l.segments.iter().map(seg).collect(),
+    }
 }
 
 // ---- Functions exposed to C++ ----------------------------------------------
@@ -355,7 +477,7 @@ fn timeline_add_extrude(
         _ => kernel::BodyOp::Join,
     };
     let kind = FeatureKind::Extrude {
-        profile: from_ffi_profile(profile),
+        source: ExtrudeSource::Profile(from_ffi_profile(profile)),
         distance,
         op,
     };
@@ -762,4 +884,52 @@ fn sketch_constraints(
             }
         })
         .collect())
+}
+
+fn sketch_profiles(t: &Timeline, sketch: u64) -> Result<Vec<bridge::ProfileInfo>, String> {
+    let s = sketch_ref(t, sketch)?;
+    Ok(find_regions(s)
+        .into_iter()
+        .map(|r| {
+            let mut outlines = Vec::new();
+            let mut loop_sizes = Vec::new();
+            for l in std::iter::once(&r.outer).chain(r.holes.iter()) {
+                loop_sizes.push(l.outline.len());
+                outlines.extend(l.outline.iter().flat_map(|p| [p[0], p[1]]));
+            }
+            bridge::ProfileInfo {
+                key: r.key.0.clone(),
+                area: r.area(),
+                outlines,
+                loop_sizes,
+            }
+        })
+        .collect())
+}
+
+fn timeline_add_extrude_sketch(
+    t: &mut Timeline,
+    name: &str,
+    sketch: u64,
+    profiles: Vec<String>,
+    distance: f64,
+    op: bridge::BodyOp,
+) -> usize {
+    let op = match op {
+        bridge::BodyOp::Cut => kernel::BodyOp::Cut,
+        bridge::BodyOp::NewBody => kernel::BodyOp::NewBody,
+        _ => kernel::BodyOp::Join,
+    };
+    let source = ExtrudeSource::Sketch {
+        sketch: FeatureId(sketch),
+        regions: profiles.into_iter().map(RegionKey).collect(),
+    };
+    t.insert(Feature::new(
+        name,
+        FeatureKind::Extrude {
+            source,
+            distance,
+            op,
+        },
+    ))
 }

@@ -24,12 +24,22 @@ pub enum BodyOp {
     NewBody,
 }
 
+use crate::sketch::{Region, SketchPlane};
+
 /// Every method returns `None` when the operation fails (bad input, kernel
 /// error); the timeline reports the failing feature instead of crashing.
 pub trait Kernel {
     type Shape;
 
     fn extrude(&self, profile: &Profile, distance: f64) -> Option<Self::Shape>;
+    /// Extrudes a sketch region (outer loop minus holes) along the plane's
+    /// normal by `distance` (negative = the other way).
+    fn extrude_region(
+        &self,
+        plane: &SketchPlane,
+        region: &Region,
+        distance: f64,
+    ) -> Option<Self::Shape>;
     fn fuse(&self, a: &Self::Shape, b: &Self::Shape) -> Option<Self::Shape>;
     fn cut(&self, a: &Self::Shape, b: &Self::Shape) -> Option<Self::Shape>;
     fn fillet_all_edges(&self, shape: &Self::Shape, radius: f64) -> Option<Self::Shape>;

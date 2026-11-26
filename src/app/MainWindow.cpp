@@ -322,15 +322,49 @@ void MainWindow::openFilletDialog() {
 // ---- Model ----------------------------------------------------------------------
 
 void MainWindow::loadDemoDocument() {
-  using model::BodyOp;
+  // The pillow block, built the way a user would: sketch, extrude, sketch, extrude.
   documentName_ = "Pillow Block";
   timeline_ = model::new_timeline();
   auto& tl = *timeline_;
-  model::timeline_add_extrude(tl, "Base", rectProfile(-60, -25, 120, 50), 12, BodyOp::Join);
-  model::timeline_add_extrude(tl, "Boss", circleProfile(0, 0, 24), 45, BodyOp::Join);
-  model::timeline_add_extrude(tl, "Bore", circleProfile(0, 0, 13), 45, BodyOp::Cut);
-  model::timeline_add_extrude(tl, "Bolt Hole L", circleProfile(-45, 0, 5), 12, BodyOp::Cut);
-  model::timeline_add_extrude(tl, "Bolt Hole R", circleProfile(45, 0, 5), 12, BodyOp::Cut);
+  using K = model::ConstraintKind;
+
+  auto centreOf = [&tl](std::uint64_t sketch, std::uint64_t circle) -> std::uint64_t {
+    for (const auto& e : model::sketch_entities(tl, sketch))
+      if (e.id == circle) return e.p0;
+    return 0;
+  };
+  auto circle = [&](std::uint64_t sketch, double x, double y, double diameter) {
+    const std::uint64_t c = model::sketch_add_circle_xy(tl, sketch, x, y, diameter / 2);
+    model::sketch_add_constraint(tl, sketch, K::Fix, centreOf(sketch, c), 0, 0, 0);
+    model::sketch_add_constraint(tl, sketch, K::Diameter, c, 0, 0, diameter);
+  };
+  auto largestProfile = [&tl](std::uint64_t sketch) {
+    rust::Vec<rust::String> keys;
+    auto profiles = model::sketch_profiles(tl, sketch);
+    if (!profiles.empty()) keys.push_back(profiles[0].key);
+    return keys;
+  };
+
+  // Base: 120 × 50 plate with the bore and two bolt holes, 12 mm thick.
+  const std::uint64_t base = model::timeline_add_sketch(tl, "Base Sketch", model::OriginPlaneKind::XY);
+  const auto edges = model::sketch_add_rectangle(tl, base, -60, -25, 60, 25);
+  std::uint64_t corner = 0;
+  for (const auto& e : model::sketch_entities(tl, base))
+    if (e.id == edges[0]) corner = e.p0;
+  model::sketch_add_constraint(tl, base, K::Fix, corner, 0, 0, 0);
+  model::sketch_add_constraint(tl, base, K::Length, edges[0], 0, 0, 120);
+  model::sketch_add_constraint(tl, base, K::Length, edges[1], 0, 0, 50);
+  circle(base, 0, 0, 26);
+  circle(base, -45, 0, 10);
+  circle(base, 45, 0, 10);
+  model::timeline_add_extrude_sketch(tl, "Base", base, largestProfile(base), 12, model::BodyOp::Join);
+
+  // Boss: a ring around the bore, 45 mm tall.
+  const std::uint64_t boss = model::timeline_add_sketch(tl, "Boss Sketch", model::OriginPlaneKind::XY);
+  circle(boss, 0, 0, 48);
+  circle(boss, 0, 0, 26);
+  model::timeline_add_extrude_sketch(tl, "Boss", boss, largestProfile(boss), 45, model::BodyOp::Join);
+
   documentBar_->setDocumentName(documentName_);
   documentBar_->setSaveState(tr("Not saved (saving arrives in M2)"));
   rebuildModel(/*fit=*/true);
@@ -387,10 +421,10 @@ void MainWindow::refreshBrowser() {
   };
   add(root, tr("Document Settings"), "settings");
   add(root, tr("Origin"), "origin");
-  QTreeWidgetItem* features = add(root, tr("Features"), "folder");
+  QTreeWidgetItem* sketches = add(root, tr("Sketches"), "folder");
   for (std::size_t i = 0; i < model::timeline_marker(*timeline_); ++i) {
-    const QString type = toQString(model::timeline_feature_type(*timeline_, i));
-    add(features, toQString(model::timeline_feature_name(*timeline_, i)), iconForType(type));
+    if (toQString(model::timeline_feature_type(*timeline_, i)) != "Sketch") continue;
+    add(sketches, toQString(model::timeline_feature_name(*timeline_, i)), "sketch");
   }
   QTreeWidgetItem* bodies = add(root, tr("Bodies"), "folder");
   if (!body_.IsNull()) {
@@ -400,7 +434,6 @@ void MainWindow::refreshBrowser() {
     body->setToolTip(1, tr("Show / hide"));
   }
   browser_->expandAll();
-  features->setExpanded(false);
   layoutOverlays();
 }
 

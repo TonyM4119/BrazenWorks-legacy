@@ -14,7 +14,7 @@ Small, shippable milestones. Each one should leave the app usable for something.
 - [x] Constraint solver (MitCad's, behind our adapter) + weekly update PRs
 - [x] Sketch model: planes, lines, arcs, circles, rectangles, constraints,
       dimensions, conflict refusal, drag; sketches as timeline features
-- [ ] Profile detection: closed loops → faces; extrude from sketch profiles
+- [x] Profile detection: closed loops → faces; extrude from sketch profiles
 - [ ] Sketch UI: draw, constrain, dimension, finish, extrude
 
 ## M2: Core modeling

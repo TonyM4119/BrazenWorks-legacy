@@ -9,7 +9,10 @@
 
 namespace model {
 
-struct Profile;  // shared struct, defined by the generated bridge header
+// Shared structs, defined by the generated bridge header.
+struct Profile;
+struct PlaneInfo;
+struct RegionData;
 
 struct Shape {
   TopoDS_Shape value;
@@ -20,5 +23,6 @@ std::unique_ptr<Shape> geom_extrude(const Profile& profile, double distance);
 std::unique_ptr<Shape> geom_fuse(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> geom_cut(const Shape& a, const Shape& b);
 std::unique_ptr<Shape> geom_fillet_all_edges(const Shape& shape, double radius);
+std::unique_ptr<Shape> geom_extrude_region(const PlaneInfo& plane, const RegionData& region, double distance);
 
 }  // namespace model

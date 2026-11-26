@@ -64,6 +64,10 @@ the source file and project, and paste the project's license text below.
 ### SolidCraft
 - License: MIT OR Apache-2.0
 - Source: https://github.com/tangency-labs/solidcraft
-- Files adapted: *none yet*
+- Files adapted: *none* (no code copied)
+- Approach followed: `crates/model_core/src/sketch/profiles.rs` uses the profile-detection
+  method described in SolidCraft's `crates/sketch/src/profiles.rs` (endpoint merging,
+  dangling-edge pruning, first-clockwise-turn face tracing, curvature tie-breaks, holes
+  from other groups). Our own implementation.
 
 <!-- When the first file is adapted, paste that project's full LICENSE text here. -->

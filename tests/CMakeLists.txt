@@ -21,3 +21,8 @@ add_test(NAME test_timeline COMMAND test_timeline)
 add_executable(test_sketch test_sketch.cpp)
 target_link_libraries(test_sketch PRIVATE model)
 add_test(NAME test_sketch COMMAND test_sketch)
+
+# Sketch profiles extruded by Open CASCADE.
+add_executable(test_profiles test_profiles.cpp)
+target_link_libraries(test_profiles PRIVATE model)
+add_test(NAME test_profiles COMMAND test_profiles)

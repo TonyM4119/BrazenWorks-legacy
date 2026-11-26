@@ -2,7 +2,9 @@
 
 #include <TopoDS_Shape.hxx>
 
+#include <array>
 #include <string>
+#include <vector>
 
 // Thin facade over Open CASCADE. Keep OCCT algorithm headers out of the rest
 // of the codebase: add a function here instead of calling BRep*API directly.
@@ -23,7 +25,34 @@ struct CircleProfile {
   double cy = 0.0;
 };
 
+// A sketch plane in world coordinates: (u, v) maps to origin + u*xAxis + v*yAxis.
+struct Plane {
+  std::array<double, 3> origin{0, 0, 0};
+  std::array<double, 3> xAxis{1, 0, 0};
+  std::array<double, 3> yAxis{0, 1, 0};
+  std::array<double, 3> normal{0, 0, 1};
+};
+
+// One oriented piece of a closed 2D loop, in sketch (u, v) coordinates.
+struct Seg2 {
+  enum class Kind { Line, Arc, Circle } kind = Kind::Line;
+  double x0 = 0, y0 = 0;  // start (line, arc)
+  double x1 = 0, y1 = 0;  // end (line, arc)
+  double cx = 0, cy = 0;  // centre (arc, circle)
+  double radius = 0;      // arc, circle
+  bool ccw = true;        // arc direction
+};
+using Loop2 = std::vector<Seg2>;
+
 TopoDS_Shape makeBox(double dx, double dy, double dz);
+
+// A planar face from an outer loop and holes. Null on failure.
+TopoDS_Shape makeRegionFace(const Plane& plane, const Loop2& outer, const std::vector<Loop2>& holes);
+
+// Extrudes a region along the plane normal by `distance`. Null on failure.
+TopoDS_Shape extrudeRegion(const Plane& plane, const Loop2& outer, const std::vector<Loop2>& holes, double distance);
+
+double area(const TopoDS_Shape& shape);
 
 // Extrude a profile along +Z by `distance` (negative extrudes along -Z).
 TopoDS_Shape extrude(const RectProfile& profile, double distance);
