@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=@BRAND_DISPLAY_NAME@
+Comment=@BRAND_TAGLINE@
+Exec=@BRAND_SLUG@ %F
+Icon=@BRAND_APP_ID@
+Categories=Graphics;Engineering;3DGraphics;
+Keywords=CAD;CAM;CNC;3D;modeling;machining;
+Terminal=false

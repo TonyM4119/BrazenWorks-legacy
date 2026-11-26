@@ -1,0 +1,27 @@
+[package]
+name = "model_core"
+version = "0.1.0"
+edition = "2021"
+description = "Parametric document model, feature timeline and (later) sketch solver and CAM logic"
+license = "MIT"
+publish = false
+
+[lib]
+# staticlib: linked into the C++ app by CMake. rlib: used by `cargo test`.
+crate-type = ["staticlib", "rlib"]
+
+[features]
+# `ffi` builds the CXX bridge to the C++ geometry layer (Open CASCADE).
+# CMake always enables it. Plain `cargo test` leaves it off and runs the pure
+# Rust tests against a mock kernel, so no C++ toolchain or OCCT is needed.
+default = []
+ffi = ["dep:cxx", "dep:cxx-build"]
+
+[dependencies]
+cxx = { version = "1.0", optional = true }
+
+[build-dependencies]
+cxx-build = { version = "1.0", optional = true }
+
+[profile.release]
+debug = 1

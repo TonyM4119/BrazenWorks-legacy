@@ -1,0 +1,10 @@
+{
+  "displayName": "BrazenWorks",
+  "slug": "brazenworks",
+  "tagline": "Open-source CAD/CAM for design and machining",
+  "organization": "BrazenWorks Project",
+  "domain": "brazenworks.org",
+  "repoUrl": "https://github.com/TonyM4119/BrazenWorks",
+  "fileExtension": "bzw",
+  "appId": "org.brazenworks.BrazenWorks"
+}
