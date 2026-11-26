@@ -229,6 +229,13 @@ void Viewport::setGridVisible(bool visible) {
   update();
 }
 
+void Viewport::setGridSpacing(double stepMm, double extentMm) {
+  viewer_->SetRectangularGridValues(0.0, 0.0, stepMm, stepMm, 0.0);
+  viewer_->SetRectangularGridGraphicValues(extentMm, extentMm, 0.0);
+  view_->Invalidate();
+  update();
+}
+
 void Viewport::setBodyVisible(bool visible) {
   bodyVisible_ = visible;
   if (body_.IsNull()) return;

@@ -34,6 +34,8 @@ class Viewport : public QOpenGLWidget, public AIS_ViewController {
   void setDragMode(DragMode mode);
   void setDisplayMode(DisplayMode mode);
   void setGridVisible(bool visible);
+  // Grid line spacing and half-size, in mm (every tenth line is stronger).
+  void setGridSpacing(double stepMm, double extentMm);
 
   QSize minimumSizeHint() const override { return {200, 200}; }
 

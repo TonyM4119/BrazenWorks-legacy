@@ -83,6 +83,16 @@ The model crate's tests run without Qt or OCCT, against a mock kernel:
 cargo test --manifest-path crates/model_core/Cargo.toml
 ```
 
+## Units
+
+New documents use **inches**. Change a document's units from the **in ▾** button at the
+bottom right, or **Browser → Document Settings → Units**: inches, feet, millimeters,
+centimeters or meters. The choice is remembered for new documents.
+
+Length fields accept any unit and mix them; a bare number is in the document unit:
+`2`, `1 1/4`, `3/8"`, `1' 6"`, `25mm`, `2in + 5mm`. Internally everything is stored in
+millimeters, so switching units never changes the geometry.
+
 ## Viewport controls
 
 | Action | Input |

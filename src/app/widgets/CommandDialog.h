@@ -1,7 +1,11 @@
 #pragma once
 
 #include "FloatingPanel.h"
+#include "model_core/src/ffi.rs.h"
 
+#include <QVector>
+
+class LengthField;
 class QComboBox;
 class QDoubleSpinBox;
 class QGridLayout;
@@ -16,6 +20,11 @@ class CommandDialog : public FloatingPanel {
   QDoubleSpinBox* addNumber(const QString& label, double value, const QString& suffix = QStringLiteral(" mm"),
                             double min = -1e6, double max = 1e6, int decimals = 2);
   QComboBox* addChoice(const QString& label, const QStringList& options, int current = 0);
+  // A length shown in the document unit; `minMm` rejects smaller values.
+  LengthField* addLength(const QString& label, double valueMm, model::LengthUnitKind unit, double minMm = -1e12);
+
+  // Shows every length field in a new unit (when the document unit changes).
+  void setUnit(model::LengthUnitKind unit);
 
   void focusFirstField();
 
@@ -27,7 +36,10 @@ class CommandDialog : public FloatingPanel {
   void keyPressEvent(QKeyEvent* event) override;
 
  private:
+  void tryAccept();
+
   QGridLayout* grid_ = nullptr;
+  QVector<LengthField*> lengths_;
   QWidget* firstField_ = nullptr;
   int rows_ = 0;
 };

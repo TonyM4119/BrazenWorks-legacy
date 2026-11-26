@@ -5,6 +5,7 @@
 
 class QHBoxLayout;
 class QLabel;
+class QToolButton;
 
 // The parametric history along the bottom: playback buttons, one chip per
 // feature, and the brass rollback marker after the last active feature.
@@ -23,6 +24,8 @@ class TimelineBar : public QFrame {
   void setFeatures(const QVector<Chip>& chips, int marker);
   void showStatus(const QString& text, int timeoutMs = 8000);
   void setPermanentStatus(const QString& text);
+  // The document-unit button at the right end ("in ▾"); MainWindow fills its menu.
+  QToolButton* unitsButton() const { return units_; }
 
  signals:
   void markerRequested(int marker);   // features [0, marker) active
@@ -31,6 +34,7 @@ class TimelineBar : public QFrame {
  private:
   QHBoxLayout* chips_ = nullptr;
   QLabel* status_ = nullptr;
+  QToolButton* units_ = nullptr;
   QString permanentStatus_;
   int count_ = 0;
 };

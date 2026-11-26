@@ -10,6 +10,7 @@ class CommandDialog;
 class DocumentBar;
 class FloatingPanel;
 class NavBar;
+class QMenu;
 class QTreeWidget;
 class Ribbon;
 class TimelineBar;
@@ -45,6 +46,10 @@ class MainWindow : public QMainWindow {
   void refreshTimeline();
   void refreshBrowser();
   void setMarker(long marker);
+
+  void setUnits(model::LengthUnitKind unit, bool remember = true);
+  void fillUnitsMenu(QMenu* menu);
+  QString unitName() const;
 
   void exportStep();
   void showAbout();

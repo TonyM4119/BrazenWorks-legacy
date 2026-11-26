@@ -19,6 +19,8 @@ qt_add_executable(app
   widgets/DocumentBar.cpp
   widgets/DocumentBar.h
   widgets/FloatingPanel.cpp
+  widgets/LengthField.cpp
+  widgets/LengthField.h
   widgets/FloatingPanel.h
   widgets/NavBar.cpp
   widgets/NavBar.h

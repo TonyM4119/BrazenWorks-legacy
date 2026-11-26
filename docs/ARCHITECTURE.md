@@ -70,6 +70,13 @@ widgets of the viewport: it is deliberately *not* a native window, so Qt can
 draw over the 3D view. All colours come from `Theme`, all icons from
 `resources/icons` via `Icons`, recoloured per state.
 
+## Units
+
+The model stores millimetres everywhere. `crates/model_core/src/units.rs` formats
+and parses lengths (fractions, feet-inches, mixed units); the document unit lives on
+the `Timeline` (inches by default). In the UI, `LengthField` shows values in the
+document unit and reads typed text through the bridge (`length_parse`).
+
 ## Branding
 
 `branding.json` → `cmake/Branding.cmake` → generated `Branding.h`, executable

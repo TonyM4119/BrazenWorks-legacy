@@ -8,9 +8,11 @@
 pub mod kernel;
 pub mod sketch;
 pub mod timeline;
+pub mod units;
 
 #[cfg(feature = "ffi")]
 mod ffi;
 
 pub use kernel::{BodyOp, Kernel, Profile};
 pub use timeline::{ExtrudeSource, Feature, FeatureId, FeatureKind, RebuildResult, Timeline};
+pub use units::{format_length, parse_length, LengthUnit};

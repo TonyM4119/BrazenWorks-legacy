@@ -2,6 +2,7 @@
 
 use crate::kernel::{BodyOp, Kernel, Profile};
 use crate::sketch::{find_region, RegionKey, Sketch};
+use crate::units::LengthUnit;
 
 /// A feature's id: stable while the timeline is edited, never reused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -167,6 +168,8 @@ pub struct Timeline {
     features: Vec<Feature>,
     marker: usize,
     next_id: u64,
+    /// Display and input unit of the document. The model is always in mm.
+    units: LengthUnit,
 }
 
 impl Default for Timeline {
@@ -175,6 +178,7 @@ impl Default for Timeline {
             features: Vec::new(),
             marker: 0,
             next_id: 1,
+            units: LengthUnit::default(),
         }
     }
 }
@@ -207,6 +211,15 @@ impl Timeline {
 
     pub fn len(&self) -> usize {
         self.features.len()
+    }
+
+    pub fn units(&self) -> LengthUnit {
+        self.units
+    }
+
+    /// Changes how lengths are shown and read. Geometry is unchanged.
+    pub fn set_units(&mut self, units: LengthUnit) {
+        self.units = units;
     }
 
     pub fn is_empty(&self) -> bool {

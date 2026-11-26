@@ -91,6 +91,8 @@ QMenu::separator { height: 1px; background: {panelBorder}; margin: 4px 6px; }
 #Browser::item:hover { background: {hover}; }
 #Browser::item:selected { background: {selection}; color: {text}; }
 #Browser::branch { background: transparent; }
+#Browser::branch:has-children:closed { image: url(:/icons/branch-closed.svg); }
+#Browser::branch:has-children:open { image: url(:/icons/branch-open.svg); }
 
 /* Command dialog */
 #DialogLabel { color: {textMuted}; background: transparent; }
@@ -98,6 +100,7 @@ QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox#DialogCombo {
   background: {field}; border: 1px solid {fieldBorder}; border-radius: 4px; padding: 3px 6px; min-height: 20px;
   selection-background-color: {selection}; }
 QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus { border-color: {highlight}; }
+QLineEdit[invalid="true"] { border-color: {danger}; }
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 0; border: 0; }
 QPushButton { background: transparent; border: 1px solid {fieldBorder}; border-radius: 6px; padding: 6px 16px; }
 QPushButton:hover { background: {hover}; }
@@ -121,6 +124,9 @@ QPushButton#PrimaryButton:hover { background: {accentHover}; }
 #Timeline #FeatureChip[failed="true"] { border-color: {danger}; }
 #TimelineMarker { background: {accent}; border-radius: 2px; }
 #StatusText { color: {textMuted}; }
+#UnitsButton { color: {textMuted}; border: 1px solid {panelBorder}; border-radius: 4px; padding: 2px 8px; font-weight: 600; }
+#UnitsButton:hover { color: {text}; border-color: {textMuted}; }
+#UnitsButton::menu-indicator { image: none; width: 0; }
 
 QScrollBar:horizontal, QScrollBar:vertical { background: transparent; height: 8px; width: 8px; }
 QScrollBar::handle { background: {fieldBorder}; border-radius: 4px; min-width: 24px; min-height: 24px; }

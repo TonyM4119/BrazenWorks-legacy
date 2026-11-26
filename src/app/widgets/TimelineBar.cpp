@@ -50,6 +50,13 @@ TimelineBar::TimelineBar(QWidget* parent) : QFrame(parent) {
   status_ = new QLabel(this);
   status_->setObjectName("StatusText");
   row->addWidget(status_);
+  row->addSpacing(8);
+
+  units_ = new QToolButton(this);
+  units_->setObjectName("UnitsButton");
+  units_->setPopupMode(QToolButton::InstantPopup);
+  units_->setToolTip(tr("Document units"));
+  row->addWidget(units_);
 }
 
 void TimelineBar::setFeatures(const QVector<Chip>& chips, int marker) {

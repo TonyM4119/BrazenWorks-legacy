@@ -9,6 +9,7 @@
 #include "widgets/CommandDialog.h"
 #include "widgets/DocumentBar.h"
 #include "widgets/FloatingPanel.h"
+#include "widgets/LengthField.h"
 #include "widgets/NavBar.h"
 #include "widgets/Ribbon.h"
 #include "widgets/TimelineBar.h"
@@ -16,6 +17,8 @@
 #include <Standard_Version.hxx>
 
 #include <QAction>
+#include <QActionGroup>
+#include <QCursor>
 #include <QApplication>
 #include <QDoubleSpinBox>
 #include <QEvent>
@@ -23,6 +26,8 @@
 #include <QHeaderView>
 #include <QMenu>
 #include <QMessageBox>
+#include <QSettings>
+#include <QToolButton>
 #include <QTreeWidget>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -102,7 +107,20 @@ QString iconForType(const QString& type) {
   return "extrude";
 }
 
-enum BrowserRole { kVisibilityRole = Qt::UserRole + 1 };
+enum BrowserRole { kVisibilityRole = Qt::UserRole + 1, kUnitsRole };
+
+constexpr double kInch = 25.4;  // mm
+
+// The unit new documents start in (Preferences → remembered from the last change).
+model::LengthUnitKind defaultUnit() {
+  const QString saved = QSettings().value("units/default", "in").toString();
+  for (auto u : {model::LengthUnitKind::Inch, model::LengthUnitKind::Foot, model::LengthUnitKind::Millimeter,
+                 model::LengthUnitKind::Centimeter, model::LengthUnitKind::Meter}) {
+    const rust::Str sym = model::length_unit_symbol(u);
+    if (saved == QString::fromUtf8(sym.data(), int(sym.size()))) return u;
+  }
+  return model::LengthUnitKind::Inch;
+}
 
 }  // namespace
 
@@ -128,7 +146,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   column->addWidget(viewport_, 1);
 
   timelineBar_ = new TimelineBar(central);
-  timelineBar_->setPermanentStatus(QString("Open CASCADE %1  ·  mm").arg(OCC_VERSION_COMPLETE));
+  timelineBar_->setPermanentStatus(QString("Open CASCADE %1").arg(OCC_VERSION_COMPLETE));
+  auto* unitsMenu = new QMenu(timelineBar_->unitsButton());
+  fillUnitsMenu(unitsMenu);
+  timelineBar_->unitsButton()->setMenu(unitsMenu);
   connect(timelineBar_, &TimelineBar::markerRequested, this, [this](int m) { setMarker(m); });
   connect(timelineBar_, &TimelineBar::stepRequested, this,
           [this](int d) { setMarker(long(model::timeline_marker(*timeline_)) + d); });
@@ -189,6 +210,12 @@ void MainWindow::buildBrowser() {
   browser_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
   browser_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   connect(browser_, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int column) {
+    if (item->data(0, kUnitsRole).toBool()) {
+      QMenu menu;
+      fillUnitsMenu(&menu);
+      menu.exec(QCursor::pos());
+      return;
+    }
     if (column != 1 || !item->data(1, kVisibilityRole).isValid()) return;
     const bool visible = !item->data(1, kVisibilityRole).toBool();
     item->setData(1, kVisibilityRole, visible);
@@ -290,17 +317,19 @@ QPoint MainWindow::dialogPosition() const {
 }
 
 void MainWindow::openBoxDialog() {
+  const model::LengthUnitKind unit = model::timeline_units(*timeline_);
   auto* d = new CommandDialog(tr("Box"), viewport_);
-  QDoubleSpinBox* width = d->addNumber(tr("Width"), 20);
-  QDoubleSpinBox* depth = d->addNumber(tr("Depth"), 20);
-  QDoubleSpinBox* height = d->addNumber(tr("Height"), 20);
-  QDoubleSpinBox* x = d->addNumber(tr("Corner X"), 70);
-  QDoubleSpinBox* y = d->addNumber(tr("Corner Y"), -10);
+  LengthField* width = d->addLength(tr("Width"), 1.0 * kInch, unit, 0.001);
+  LengthField* depth = d->addLength(tr("Depth"), 1.0 * kInch, unit, 0.001);
+  LengthField* height = d->addLength(tr("Height"), 1.0 * kInch, unit, 0.001);
+  LengthField* x = d->addLength(tr("Corner X"), 3.0 * kInch, unit);
+  LengthField* y = d->addLength(tr("Corner Y"), -0.5 * kInch, unit);
   connect(d, &CommandDialog::accepted, this, [=, this] {
     const int n = int(model::timeline_len(*timeline_)) + 1;
     const std::string name = QString("Box %1").arg(n).toStdString();
-    model::timeline_add_extrude(*timeline_, name, rectProfile(x->value(), y->value(), width->value(), depth->value()),
-                                height->value(), model::BodyOp::Join);
+    model::timeline_add_extrude(*timeline_, name,
+                                rectProfile(x->valueMm(), y->valueMm(), width->valueMm(), depth->valueMm()),
+                                height->valueMm(), model::BodyOp::Join);
     closeDialog();
     rebuildModel(true);
   });
@@ -309,14 +338,61 @@ void MainWindow::openBoxDialog() {
 
 void MainWindow::openFilletDialog() {
   auto* d = new CommandDialog(tr("Fillet"), viewport_);
-  QDoubleSpinBox* radius = d->addNumber(tr("Radius"), 1.0, " mm", 0.01, 1000);
+  LengthField* radius = d->addLength(tr("Radius"), 0.03 * kInch, model::timeline_units(*timeline_), 0.001);
   d->addChoice(tr("Edges"), {tr("All edges")});
   connect(d, &CommandDialog::accepted, this, [=, this] {
-    model::timeline_add_fillet(*timeline_, "Fillet", radius->value());
+    model::timeline_add_fillet(*timeline_, "Fillet", radius->valueMm());
     closeDialog();
     rebuildModel();
   });
   showDialog(d);
+}
+
+// ---- Units ----------------------------------------------------------------------
+
+QString MainWindow::unitName() const {
+  return QString::fromUtf8(model::length_unit_name(model::timeline_units(*timeline_)).data(),
+                           int(model::length_unit_name(model::timeline_units(*timeline_)).size()));
+}
+
+void MainWindow::fillUnitsMenu(QMenu* menu) {
+  menu->clear();
+  const model::LengthUnitKind current = model::timeline_units(*timeline_);
+  auto* group = new QActionGroup(menu);
+  const model::LengthUnitKind all[] = {model::LengthUnitKind::Inch, model::LengthUnitKind::Foot,
+                                       model::LengthUnitKind::Millimeter, model::LengthUnitKind::Centimeter,
+                                       model::LengthUnitKind::Meter};
+  for (model::LengthUnitKind u : all) {
+    const rust::Str name = model::length_unit_name(u);
+    const rust::Str sym = model::length_unit_symbol(u);
+    QAction* a = menu->addAction(QString("%1 (%2)").arg(QString::fromUtf8(name.data(), int(name.size())),
+                                                       QString::fromUtf8(sym.data(), int(sym.size()))));
+    a->setCheckable(true);
+    a->setChecked(u == current);
+    group->addAction(a);
+    connect(a, &QAction::triggered, this, [this, u] { setUnits(u); });
+    if (u == model::LengthUnitKind::Foot) menu->addSeparator();
+  }
+}
+
+void MainWindow::setUnits(model::LengthUnitKind unit, bool remember) {
+  model::timeline_set_units(*timeline_, unit);
+  const rust::Str sym = model::length_unit_symbol(unit);
+  if (remember) QSettings().setValue("units/default", QString::fromUtf8(sym.data(), int(sym.size())));
+
+  timelineBar_->unitsButton()->setText(QString::fromUtf8(sym.data(), int(sym.size())) + QStringLiteral(" ▾"));
+  fillUnitsMenu(timelineBar_->unitsButton()->menu());
+
+  // Imperial: 0.1" grid, inch lines stronger. Metric: 10 mm grid, 100 mm lines.
+  const bool imperial = unit == model::LengthUnitKind::Inch || unit == model::LengthUnitKind::Foot;
+  if (imperial) {
+    viewport_->setGridSpacing(0.1 * kInch, 10 * kInch);
+  } else {
+    viewport_->setGridSpacing(10.0, 250.0);
+  }
+
+  if (dialog_) dialog_->setUnit(unit);
+  refreshBrowser();
 }
 
 // ---- Model ----------------------------------------------------------------------
@@ -326,6 +402,7 @@ void MainWindow::loadDemoDocument() {
   documentName_ = "Pillow Block";
   timeline_ = model::new_timeline();
   auto& tl = *timeline_;
+  constexpr double in = kInch;  // designed in inches; stored in mm
   using K = model::ConstraintKind;
 
   auto centreOf = [&tl](std::uint64_t sketch, std::uint64_t circle) -> std::uint64_t {
@@ -345,26 +422,27 @@ void MainWindow::loadDemoDocument() {
     return keys;
   };
 
-  // Base: 120 × 50 plate with the bore and two bolt holes, 12 mm thick.
+  // Base: 5 1/2" × 2 1/4" plate with a 1" bore and two 3/8" bolt holes, 1/2" thick.
   const std::uint64_t base = model::timeline_add_sketch(tl, "Base Sketch", model::OriginPlaneKind::XY);
-  const auto edges = model::sketch_add_rectangle(tl, base, -60, -25, 60, 25);
+  const auto edges = model::sketch_add_rectangle(tl, base, -2.75 * in, -1.125 * in, 2.75 * in, 1.125 * in);
   std::uint64_t corner = 0;
   for (const auto& e : model::sketch_entities(tl, base))
     if (e.id == edges[0]) corner = e.p0;
   model::sketch_add_constraint(tl, base, K::Fix, corner, 0, 0, 0);
-  model::sketch_add_constraint(tl, base, K::Length, edges[0], 0, 0, 120);
-  model::sketch_add_constraint(tl, base, K::Length, edges[1], 0, 0, 50);
-  circle(base, 0, 0, 26);
-  circle(base, -45, 0, 10);
-  circle(base, 45, 0, 10);
-  model::timeline_add_extrude_sketch(tl, "Base", base, largestProfile(base), 12, model::BodyOp::Join);
+  model::sketch_add_constraint(tl, base, K::Length, edges[0], 0, 0, 5.5 * in);
+  model::sketch_add_constraint(tl, base, K::Length, edges[1], 0, 0, 2.25 * in);
+  circle(base, 0, 0, 1.0 * in);
+  circle(base, -2.125 * in, 0, 0.375 * in);
+  circle(base, 2.125 * in, 0, 0.375 * in);
+  model::timeline_add_extrude_sketch(tl, "Base", base, largestProfile(base), 0.5 * in, model::BodyOp::Join);
 
-  // Boss: a ring around the bore, 45 mm tall.
+  // Boss: a 1 3/4" ring around the bore, 1 3/4" tall.
   const std::uint64_t boss = model::timeline_add_sketch(tl, "Boss Sketch", model::OriginPlaneKind::XY);
-  circle(boss, 0, 0, 48);
-  circle(boss, 0, 0, 26);
-  model::timeline_add_extrude_sketch(tl, "Boss", boss, largestProfile(boss), 45, model::BodyOp::Join);
+  circle(boss, 0, 0, 1.75 * in);
+  circle(boss, 0, 0, 1.0 * in);
+  model::timeline_add_extrude_sketch(tl, "Boss", boss, largestProfile(boss), 1.75 * in, model::BodyOp::Join);
 
+  setUnits(defaultUnit(), /*remember=*/false);
   documentBar_->setDocumentName(documentName_);
   documentBar_->setSaveState(tr("Not saved (saving arrives in M2)"));
   rebuildModel(/*fit=*/true);
@@ -419,7 +497,10 @@ void MainWindow::refreshBrowser() {
     item->setIcon(0, icons::get(icon, theme::kSmallIconSize));
     return item;
   };
-  add(root, tr("Document Settings"), "settings");
+  QTreeWidgetItem* settings = add(root, tr("Document Settings"), "settings");
+  QTreeWidgetItem* unitsItem = add(settings, tr("Units: %1").arg(unitName()), "measure");
+  unitsItem->setData(0, kUnitsRole, true);
+  unitsItem->setToolTip(0, tr("Click to change the document units"));
   add(root, tr("Origin"), "origin");
   QTreeWidgetItem* sketches = add(root, tr("Sketches"), "folder");
   for (std::size_t i = 0; i < model::timeline_marker(*timeline_); ++i) {

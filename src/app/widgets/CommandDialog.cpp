@@ -1,11 +1,14 @@
 #include "CommandDialog.h"
 
+#include "LengthField.h"
+
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QGridLayout>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
 #include <QVBoxLayout>
 
@@ -31,7 +34,7 @@ CommandDialog::CommandDialog(const QString& title, QWidget* parent) : FloatingPa
   ok->setObjectName("PrimaryButton");
   ok->setDefault(true);
   connect(cancel, &QPushButton::clicked, this, &CommandDialog::rejected);
-  connect(ok, &QPushButton::clicked, this, &CommandDialog::accepted);
+  connect(ok, &QPushButton::clicked, this, &CommandDialog::tryAccept);
   buttons->addWidget(cancel);
   buttons->addWidget(ok);
   v->addLayout(buttons);
@@ -73,10 +76,44 @@ QComboBox* CommandDialog::addChoice(const QString& label, const QStringList& opt
   return field;
 }
 
+LengthField* CommandDialog::addLength(const QString& label, double valueMm, model::LengthUnitKind unit,
+                                     double minMm) {
+  auto* name = new QLabel(label, this);
+  name->setObjectName("DialogLabel");
+  auto* field = new LengthField(valueMm, unit, this);
+  field->setMinimumMm(minMm);
+  name->setBuddy(field);
+  grid_->addWidget(name, rows_, 0);
+  grid_->addWidget(field, rows_, 1);
+  ++rows_;
+  lengths_.push_back(field);
+  if (!firstField_) firstField_ = field;
+  return field;
+}
+
+void CommandDialog::setUnit(model::LengthUnitKind unit) {
+  for (LengthField* f : lengths_) f->setUnit(unit);
+}
+
+void CommandDialog::tryAccept() {
+  // Read every length (including the one being typed); stay open on errors.
+  LengthField* firstBad = nullptr;
+  for (LengthField* f : lengths_) {
+    if (!f->commit() && !firstBad) firstBad = f;
+  }
+  if (firstBad) {
+    firstBad->setFocus();
+    firstBad->selectAll();
+    return;
+  }
+  emit accepted();
+}
+
 void CommandDialog::focusFirstField() {
   if (!firstField_) return;
   firstField_->setFocus();
   if (auto* spin = qobject_cast<QDoubleSpinBox*>(firstField_)) spin->selectAll();
+  if (auto* edit = qobject_cast<QLineEdit*>(firstField_)) edit->selectAll();
 }
 
 void CommandDialog::keyPressEvent(QKeyEvent* event) {
@@ -85,7 +122,7 @@ void CommandDialog::keyPressEvent(QKeyEvent* event) {
     return;
   }
   if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
-    emit accepted();
+    tryAccept();
     return;
   }
   FloatingPanel::keyPressEvent(event);

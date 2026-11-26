@@ -26,3 +26,8 @@ add_test(NAME test_sketch COMMAND test_sketch)
 add_executable(test_profiles test_profiles.cpp)
 target_link_libraries(test_profiles PRIVATE model)
 add_test(NAME test_profiles COMMAND test_profiles)
+
+# Units (parse/format, document unit) through the bridge.
+add_executable(test_units test_units.cpp)
+target_link_libraries(test_units PRIVATE model)
+add_test(NAME test_units COMMAND test_units)

@@ -12,6 +12,7 @@ use crate::sketch::{
     Sketch, SketchConstraint, SketchError, SketchPlane, SolveStatus, SolveSummary,
 };
 use crate::timeline::{ExtrudeSource, Feature, FeatureId, FeatureKind, Timeline};
+use crate::units::{self, LengthUnit};
 use cxx::UniquePtr;
 
 #[cxx::bridge(namespace = "model")]
@@ -36,6 +37,23 @@ mod bridge {
         Join,
         Cut,
         NewBody,
+    }
+
+    // ---- Units ----
+
+    /// Display/input unit. The model always stores millimetres.
+    enum LengthUnitKind {
+        Inch,
+        Foot,
+        Millimeter,
+        Centimeter,
+        Meter,
+    }
+
+    struct LengthParse {
+        ok: bool,
+        mm: f64,
+        error: String,
     }
 
     // ---- Sketches ----
@@ -220,6 +238,16 @@ mod bridge {
         /// Replays the timeline on Open CASCADE. Returns a null pointer if no
         /// body was produced; indices of failed features go into `failed`.
         fn timeline_rebuild(t: &Timeline, failed: &mut Vec<usize>) -> UniquePtr<Shape>;
+
+        fn timeline_units(t: &Timeline) -> LengthUnitKind;
+        fn timeline_set_units(t: &mut Timeline, unit: LengthUnitKind);
+        /// "1.25 in", "25.40 mm"…
+        fn length_format(mm: f64, unit: LengthUnitKind) -> String;
+        /// Reads "2", "1 1/4", "1' 6\"", "25mm", "2in + 5mm"…; bare numbers are in `unit`.
+        fn length_parse(text: &str, unit: LengthUnitKind) -> LengthParse;
+        fn length_unit_symbol(unit: LengthUnitKind) -> &'static str;
+        fn length_unit_name(unit: LengthUnitKind) -> &'static str;
+        fn length_unit_mm(unit: LengthUnitKind) -> f64;
 
         /// Stable id of the feature at `index` (0 if out of range).
         fn timeline_feature_id(t: &Timeline, index: usize) -> u64;
@@ -932,4 +960,65 @@ fn timeline_add_extrude_sketch(
             op,
         },
     ))
+}
+
+// ---- Units ----------------------------------------------------------------
+
+fn unit_from(k: bridge::LengthUnitKind) -> LengthUnit {
+    match k {
+        bridge::LengthUnitKind::Foot => LengthUnit::Foot,
+        bridge::LengthUnitKind::Millimeter => LengthUnit::Millimeter,
+        bridge::LengthUnitKind::Centimeter => LengthUnit::Centimeter,
+        bridge::LengthUnitKind::Meter => LengthUnit::Meter,
+        _ => LengthUnit::Inch,
+    }
+}
+
+fn unit_to(u: LengthUnit) -> bridge::LengthUnitKind {
+    match u {
+        LengthUnit::Inch => bridge::LengthUnitKind::Inch,
+        LengthUnit::Foot => bridge::LengthUnitKind::Foot,
+        LengthUnit::Millimeter => bridge::LengthUnitKind::Millimeter,
+        LengthUnit::Centimeter => bridge::LengthUnitKind::Centimeter,
+        LengthUnit::Meter => bridge::LengthUnitKind::Meter,
+    }
+}
+
+fn timeline_units(t: &Timeline) -> bridge::LengthUnitKind {
+    unit_to(t.units())
+}
+
+fn timeline_set_units(t: &mut Timeline, unit: bridge::LengthUnitKind) {
+    t.set_units(unit_from(unit));
+}
+
+fn length_format(mm: f64, unit: bridge::LengthUnitKind) -> String {
+    units::format_length(mm, unit_from(unit))
+}
+
+fn length_parse(text: &str, unit: bridge::LengthUnitKind) -> bridge::LengthParse {
+    match units::parse_length(text, unit_from(unit)) {
+        Ok(mm) => bridge::LengthParse {
+            ok: true,
+            mm,
+            error: String::new(),
+        },
+        Err(e) => bridge::LengthParse {
+            ok: false,
+            mm: 0.0,
+            error: e.0,
+        },
+    }
+}
+
+fn length_unit_symbol(unit: bridge::LengthUnitKind) -> &'static str {
+    unit_from(unit).symbol()
+}
+
+fn length_unit_name(unit: bridge::LengthUnitKind) -> &'static str {
+    unit_from(unit).name()
+}
+
+fn length_unit_mm(unit: bridge::LengthUnitKind) -> f64 {
+    unit_from(unit).mm_per_unit()
 }
