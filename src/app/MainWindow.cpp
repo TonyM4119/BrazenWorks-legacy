@@ -231,6 +231,7 @@ void MainWindow::layoutOverlays(bool animate) {
     if (animate) {
       anim::resize(browserPanel_, target);
     } else {
+      anim::stopResize(browserPanel_);
       browserPanel_->setGeometry(target);
     }
     browserPanel_->raise();
@@ -374,6 +375,8 @@ void MainWindow::refreshBrowser() {
     return true;
   }();
 
+  // Rebuilding the tree expands every item; don't animate each one.
+  const QSignalBlocker quiet(browser_);
   browser_->clear();
   auto* root = new QTreeWidgetItem(browser_, {documentName_});
   root->setIcon(0, icons::tinted("body", theme::current().accent, theme::kSmallIconSize));
