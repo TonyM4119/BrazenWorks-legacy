@@ -13,14 +13,20 @@ class DocumentBar : public QFrame {
   explicit DocumentBar(QWidget* parent = nullptr);
 
   QMenu* appMenu() const { return appMenu_; }
+  QMenu* helpMenu() const { return helpMenu_; }
+  void setVersionVisible(bool visible);
   void setDocumentName(const QString& name);
   void setSaveState(const QString& text);
 
  signals:
-  void helpRequested();
+  void preferencesRequested();
+  void undoRequested();
+  void redoRequested();
 
  private:
   QMenu* appMenu_ = nullptr;
+  QMenu* helpMenu_ = nullptr;
+  QLabel* version_ = nullptr;
   QLabel* docName_ = nullptr;
   QLabel* saveState_ = nullptr;
 };

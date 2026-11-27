@@ -1,4 +1,16 @@
 #include "MainWindow.h"
+#include <QSettings>
+#include <QHBoxLayout>
+#include <QUrl>
+#include <QSysInfo>
+#include <QTableWidget>
+#include <QPushButton>
+#include <QDialog>
+#include <QClipboard>
+#include <QFileInfo>
+#include <QDesktopServices>
+#include "widgets/PreferencesDialog.h"
+#include "Settings.h"
 
 #include "Branding.h"
 #include "Icons.h"
@@ -114,7 +126,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   column->setSpacing(0);
 
   documentBar_ = new DocumentBar(central);
-  connect(documentBar_, &DocumentBar::helpRequested, this, &MainWindow::showAbout);
+  connect(documentBar_, &DocumentBar::preferencesRequested, this, &MainWindow::openPreferences);
   column->addWidget(documentBar_);
 
   ribbon_ = new Ribbon(central);
@@ -147,7 +159,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
           [this](NavBar::DisplayMode m) { viewport_->setDisplayMode(Viewport::DisplayMode(int(m))); });
 
   buildAppMenu();
+  buildHelpMenu();
   loadDemoDocument();
+  applyPreferences();
   resize(1440, 900);
 }
 
@@ -429,4 +443,109 @@ void MainWindow::showAbout() {
               "<p>Geometry by Open CASCADE Technology %5 (LGPL-2.1).<br>UI by Qt %6 (LGPL-3.0).</p>")
           .arg(branding::kDisplayName, branding::kVersion, branding::kTagline, branding::kRepoUrl,
                OCC_VERSION_COMPLETE, qVersion()));
+}
+
+// ---- Preferences and help ------------------------------------------------------------
+
+void MainWindow::openPreferences() {
+  auto* dialog = new PreferencesDialog(this);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  connect(dialog, &PreferencesDialog::applied, this, &MainWindow::applyPreferences);
+  dialog->open();
+}
+
+void MainWindow::applyPreferences() {
+  viewport_->setNavigation(prefs::flag(prefs::kOrbitMiddle), prefs::flag(prefs::kReverseZoom),
+                           prefs::flag(prefs::kAnimateCamera));
+  navBar_->setGridChecked(prefs::flag(prefs::kShowGrid));
+  documentBar_->setVersionVisible(prefs::flag(prefs::kShowVersion));
+}
+
+void MainWindow::buildHelpMenu() {
+  QMenu* menu = documentBar_->helpMenu();
+  const QString repo = branding::kRepoUrl;
+  auto open = [](const QString& url) { QDesktopServices::openUrl(QUrl(url)); };
+  menu->addAction(icons::get("document", 16), tr("User Guide"), this, [=] { open(repo + "#readme"); });
+  menu->addAction(icons::get("select", 16), tr("Keyboard and Mouse Overview"), this, &MainWindow::showShortcuts);
+  menu->addSeparator();
+  menu->addAction(icons::get("measure", 16), tr("Diagnostics…"), this, &MainWindow::showDiagnostics);
+  menu->addAction(icons::get("folder", 16), tr("Open Settings Folder"), this, [] {
+    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(QSettings().fileName()).absolutePath()));
+  });
+  menu->addAction(icons::get("export", 16), tr("Check for Updates…"), this, [=] { open(repo + "/releases"); });
+  menu->addAction(icons::get("comment", 16), tr("Send Feedback…"), this, [=] { open(repo + "/issues/new"); });
+  menu->addSeparator();
+  menu->addAction(tr("About %1").arg(branding::kDisplayName), this, &MainWindow::showAbout);
+  menu->addAction(tr("About Qt"), qApp, &QApplication::aboutQt);
+}
+
+namespace {
+
+// A read-only two-column table in a themed dialog.
+QDialog* infoDialog(QWidget* parent, const QString& title, const QStringList& headers,
+                    const QList<QPair<QString, QString>>& rows, bool copyButton) {
+  auto* d = new QDialog(parent);
+  d->setObjectName("InfoDialog");
+  d->setWindowTitle(title);
+  d->setAttribute(Qt::WA_DeleteOnClose);
+  d->resize(620, 460);
+  auto* layout = new QVBoxLayout(d);
+  auto* table = new QTableWidget(int(rows.size()), 2, d);
+  table->setObjectName("InfoTable");
+  table->setHorizontalHeaderLabels(headers);
+  table->verticalHeader()->hide();
+  table->horizontalHeader()->setStretchLastSection(true);
+  table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  table->setSelectionMode(QAbstractItemView::NoSelection);
+  table->setShowGrid(false);
+  for (int i = 0; i < rows.size(); ++i) {
+    table->setItem(i, 0, new QTableWidgetItem(rows[i].first));
+    table->setItem(i, 1, new QTableWidgetItem(rows[i].second));
+  }
+  table->resizeColumnToContents(0);
+  table->setColumnWidth(0, table->columnWidth(0) + 24);
+  layout->addWidget(table);
+  auto* buttons = new QHBoxLayout;
+  buttons->addStretch(1);
+  if (copyButton) {
+    auto* copy = new QPushButton(QObject::tr("Copy to Clipboard"), d);
+    QObject::connect(copy, &QPushButton::clicked, d, [rows] {
+      QStringList lines;
+      for (const auto& r : rows) lines << r.first + ": " + r.second;
+      QGuiApplication::clipboard()->setText(lines.join('\n'));
+    });
+    buttons->addWidget(copy);
+  }
+  auto* close = new QPushButton(QObject::tr("Close"), d);
+  close->setObjectName("PrimaryButton");
+  QObject::connect(close, &QPushButton::clicked, d, &QDialog::accept);
+  buttons->addWidget(close);
+  layout->addLayout(buttons);
+  return d;
+}
+
+}  // namespace
+
+void MainWindow::showShortcuts() {
+  const QList<QPair<QString, QString>> rows = {
+      {tr("Middle-drag"), prefs::flag(prefs::kOrbitMiddle) ? tr("Orbit") : tr("Pan")},
+      {tr("Shift + middle-drag"), prefs::flag(prefs::kOrbitMiddle) ? tr("Pan") : tr("Orbit")},
+      {tr("Mouse wheel"), tr("Zoom at the cursor")},
+      {tr("Left-drag"), tr("Window select (or the nav bar's orbit/pan/zoom mode)")},
+      {tr("F6"), tr("Fit all")},
+  };
+  infoDialog(this, tr("Keyboard and Mouse Overview"), {tr("Input"), tr("Action")}, rows, false)->open();
+}
+
+void MainWindow::showDiagnostics() {
+  const QList<QPair<QString, QString>> rows = {
+      {tr("Version"), QString("%1 %2").arg(branding::kDisplayName, branding::kVersion)},
+      {tr("Qt"), QString(qVersion())},
+      {tr("Open CASCADE"), QString(OCC_VERSION_COMPLETE)},
+      {tr("OpenGL"), viewport_->glInfo()},
+      {tr("Operating system"), QSysInfo::prettyProductName() + " (" + QSysInfo::currentCpuArchitecture() + ")"},
+      {tr("Theme"), theme::current().light ? tr("Light") : tr("Dark")},
+      {tr("Settings file"), QSettings().fileName()},
+  };
+  infoDialog(this, tr("Diagnostics"), {tr("Item"), tr("Value")}, rows, true)->open();
 }

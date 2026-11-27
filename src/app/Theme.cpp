@@ -1,5 +1,7 @@
 #include "Theme.h"
 
+#include "Settings.h"
+
 #include <QMap>
 
 namespace theme {
@@ -29,7 +31,36 @@ const Palette& dark() {
   return p;
 }
 
-const Palette& current() { return dark(); }
+const Palette& light() {
+  static const Palette p{
+      /*appBackground*/ QColor("#E4E7EB"),
+      /*barBackground*/ QColor("#F7F8F9"),
+      /*toolbar*/       QColor("#F1F3F5"),
+      /*panel*/         QColor("#FFFFFF"),
+      /*panelBorder*/   QColor("#D5D9DE"),
+      /*field*/         QColor("#FFFFFF"),
+      /*fieldBorder*/   QColor("#C3C9D0"),
+      /*hover*/         QColor("#E4E8ED"),
+      /*selection*/     QColor("#D3E5F8"),
+      /*text*/          QColor("#1F2328"),
+      /*textMuted*/     QColor("#5E6670"),
+      /*textDisabled*/  QColor("#A3A9B1"),
+      /*accent*/        QColor("#E2852A"),
+      /*accentText*/    QColor("#FFFFFF"),
+      /*highlight*/     QColor("#1C7CDB"),
+      /*success*/       QColor("#2EA66B"),
+      /*danger*/        QColor("#D93A3F"),
+      /*viewport*/      QColor("#EEF0F2"),
+      /*viewportGrid*/  QColor("#C9CED4"),
+      /*light*/         true,
+  };
+  return p;
+}
+
+const Palette& current() {
+  static const Palette& chosen = prefs::get(prefs::kTheme).toString() == "light" ? light() : dark();
+  return chosen;
+}
 
 QString styleSheet(const Palette& p) {
   // {token} placeholders are replaced with palette colours below.
@@ -37,6 +68,7 @@ QString styleSheet(const Palette& p) {
 * { color: {text}; font-size: 12px; }
 QMainWindow, QWidget#Central { background: {appBackground}; }
 QToolTip { background: {panel}; color: {text}; border: 1px solid {panelBorder}; padding: 4px 6px; }
+#CursorPrompt { background: {panel}; color: {text}; border: 1px solid {panelBorder}; padding: 2px 6px; }
 
 /* Document bar */
 #DocumentBar { background: {barBackground}; border-bottom: 1px solid #2A2D32; }
@@ -65,6 +97,12 @@ QToolTip { background: {panel}; color: {text}; border: 1px solid {panelBorder}; 
 #ToolButton { border: 1px solid transparent; border-radius: 6px; background: transparent; }
 /* #ToolButton hover is painted (and faded) by AnimatedToolButton */
 #ToolButton:pressed, #ToolButton:checked { border-color: {accent}; }
+#ToolButton[active="true"] { border-color: {accent}; background: {selection}; }
+#PrimaryToolButton { border: 0; border-radius: 6px; background: {success}; color: {accentText};
+  font-weight: 600; font-size: 10px; padding: 4px 6px; }
+#PrimaryToolButton:hover { background: {successHover}; }
+#SketchValueEdit { background: {field}; color: {text}; border: 1px solid {accent}; border-radius: 4px;
+  padding: 2px 6px; font-size: 12px; selection-background-color: {accent}; selection-color: {accentText}; }
 #GroupButton { border: 0; background: transparent; color: {textMuted}; font-size: 10px; font-weight: 700;
                letter-spacing: 0.8px; padding: 2px 4px; }
 #GroupButton:hover { color: {text}; }
@@ -86,18 +124,62 @@ QMenu::separator { height: 1px; background: {panelBorder}; margin: 4px 6px; }
 #AccentDot { background: {accent}; border-radius: 4px; }
 
 /* Browser tree */
-#Browser { background: transparent; border: 0; outline: 0; }
-#Browser::item { height: 24px; border-radius: 4px; }
-#Browser::item:hover { background: {hover}; }
-#Browser::item:selected { background: {selection}; color: {text}; }
+#Browser { background: transparent; border: 0; outline: 0; show-decoration-selected: 1; }
+#Browser::item { height: 24px; border: 0; padding-left: 2px; }
+#Browser::item:hover, #Browser::branch:hover { background: {hover}; }
+#Browser::item:selected, #Browser::branch:selected { background: {selection}; color: {text}; }
 #Browser::branch { background: transparent; }
+#Browser::branch:has-children:closed { image: url(:/icons/branch-closed.svg); }
+#Browser::branch:has-children:open { image: url(:/icons/branch-open.svg); }
 
 /* Command dialog */
 #DialogLabel { color: {textMuted}; background: transparent; }
+#QuickButton { background: transparent; border: 0; border-radius: 4px; padding: 3px; min-width: 26px; min-height: 26px; }
+#QuickButton:hover { background: {hover}; }
+#QuickButton:pressed { background: {selection}; }
+#QuickButton::menu-indicator { subcontrol-origin: padding; subcontrol-position: right center; right: 2px; }
+#QuickSeparator { background: {panelBorder}; }
+#VersionLabel { color: {textMuted}; font-size: 12px; padding: 0 2px; }
+QDialog#Preferences, QDialog#InfoDialog { background: {panel}; }
+#PrefsCategories { background: {appBackground}; border: 1px solid {panelBorder}; border-radius: 6px; padding: 4px; outline: 0; }
+#PrefsCategories::item { padding: 7px 10px; border-radius: 4px; border-left: 3px solid transparent; }
+#PrefsCategories::item:hover { background: {hover}; }
+#PrefsCategories::item:selected { background: {selection}; color: {text}; border-left: 3px solid {accent}; }
+#PrefsGroup { border: 1px solid {panelBorder}; border-radius: 6px; margin-top: 10px; padding-top: 6px; font-weight: 600; }
+#PrefsGroup::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: {text}; }
+#PrefsGroup QLabel, #PrefsGroup QCheckBox { font-weight: 400; }
+#PrefsNote { color: {textMuted}; font-weight: 400; }
+QCheckBox { spacing: 8px; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid {fieldBorder}; border-radius: 4px; background: {field}; }
+QCheckBox::indicator:checked { background: {highlight}; border-color: {highlight}; image: url(:/icons/check-white.svg); }
+QSpinBox::up-button, QSpinBox::down-button { width: 14px; border: 0; }
+#InfoTable { background: {appBackground}; border: 1px solid {panelBorder}; border-radius: 6px; gridline-color: {panelBorder}; }
+#InfoTable QHeaderView::section { background: {toolbar}; color: {textMuted}; border: 0; padding: 4px 8px; }
+#PaletteScroll, #PaletteScroll > QWidget > QWidget { background: transparent; }
+#PaletteHeading { color: {textMuted}; font-weight: 600; font-size: 11px; padding-top: 4px; }
+#PaletteSection { font-weight: 700; }
+#PaletteSection[state="full"] { color: {success}; }
+#PaletteSection[state="conflict"] { color: {danger}; }
+#PaletteRow:hover { background: {hover}; border-radius: 4px; }
+QToolButton#PaletteArrow { background: transparent; border: none; padding: 0; }
+QToolButton#PaletteTool:checked { background: {selection}; border-color: {accent}; }
+QToolButton#PaletteHeading { background: transparent; border: none; padding: 4px 0 0 0; }
+QToolButton#PaletteHeading:hover { color: {text}; }
+#PaletteDof { font-weight: 600; }
+#PaletteDof[state="full"] { color: {success}; }
+#PaletteDof[state="conflict"] { color: {danger}; }
+#PaletteButton { padding: 3px 8px; border-radius: 5px; }
+#PaletteTool { background: transparent; border: 1px solid transparent; border-radius: 6px; }
+#PaletteTool:hover { background: {hover}; }
+#PaletteTool[active="true"] { border-color: {accent}; background: {selection}; }
+#PaletteToolTitle { font-weight: 700; }
+#PaletteHint { color: {textMuted}; }
+#DialogInfo { color: {text}; background: transparent; font-weight: 600; }
 QLineEdit, QDoubleSpinBox, QSpinBox, QComboBox#DialogCombo {
   background: {field}; border: 1px solid {fieldBorder}; border-radius: 4px; padding: 3px 6px; min-height: 20px;
   selection-background-color: {selection}; }
 QLineEdit:focus, QDoubleSpinBox:focus, QSpinBox:focus { border-color: {highlight}; }
+QLineEdit[invalid="true"] { border-color: {danger}; }
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button { width: 0; border: 0; }
 QPushButton { background: transparent; border: 1px solid {fieldBorder}; border-radius: 6px; padding: 6px 16px; }
 QPushButton:hover { background: {hover}; }
@@ -114,13 +196,16 @@ QPushButton#PrimaryButton:hover { background: {accentHover}; }
 #Timeline { background: {toolbar}; border-top: 1px solid #2A2D32; }
 #Timeline QToolButton { border: 0; border-radius: 4px; background: transparent; padding: 4px; }
 #Timeline QToolButton:hover { background: {hover}; }
-#Timeline #FeatureChip { background: #33373D; border: 1px solid {fieldBorder}; border-radius: 5px; padding: 0; }
+#Timeline #FeatureChip { background: {hover}; border: 1px solid {fieldBorder}; border-radius: 5px; padding: 0; }
 #Timeline #FeatureChip[sketch="true"] { background: {selection}; }
 #Timeline #FeatureChip:hover { border-color: {textMuted}; }
 #Timeline #FeatureChip[rolledBack="true"] { background: transparent; border: 1px dashed {fieldBorder}; }
 #Timeline #FeatureChip[failed="true"] { border-color: {danger}; }
 #TimelineMarker { background: {accent}; border-radius: 2px; }
 #StatusText { color: {textMuted}; }
+#UnitsButton { color: {textMuted}; border: 1px solid {panelBorder}; border-radius: 4px; padding: 2px 8px; font-weight: 600; }
+#UnitsButton:hover { color: {text}; border-color: {textMuted}; }
+#UnitsButton::menu-indicator { image: none; width: 0; }
 
 QScrollBar:horizontal, QScrollBar:vertical { background: transparent; height: 8px; width: 8px; }
 QScrollBar::handle { background: {fieldBorder}; border-radius: 4px; min-width: 24px; min-height: 24px; }
@@ -138,7 +223,7 @@ QMessageBox { background: {panel}; }
       {"accent", p.accent},               {"accentText", p.accentText},
       {"accentHover", p.accent.lighter(110)},
       {"highlight", p.highlight},         {"success", p.success},
-      {"danger", p.danger},
+      {"danger", p.danger},              {"successHover", p.success.lighter(112)},
   };
   for (auto it = tokens.cbegin(); it != tokens.cend(); ++it) {
     qss.replace("{" + it.key() + "}", it.value().name());

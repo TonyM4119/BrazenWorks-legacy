@@ -48,6 +48,11 @@ class MainWindow : public QMainWindow {
 
   void exportStep();
   void showAbout();
+  void openPreferences();
+  void applyPreferences();
+  void buildHelpMenu();
+  void showShortcuts();
+  void showDiagnostics();
 
   rust::Box<model::Timeline> timeline_ = model::new_timeline();
   TopoDS_Shape body_;

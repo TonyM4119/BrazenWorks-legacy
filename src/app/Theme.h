@@ -27,15 +27,18 @@ struct Palette {
   QColor danger;
   QColor viewport;         // 3D background
   QColor viewportGrid;
+  bool light = false;      // picks the light icon variants
 };
 
 const Palette& dark();
+const Palette& light();
+// The theme chosen in Preferences (read once at startup).
 const Palette& current();
 
 // Qt stylesheet generated from the palette.
 QString styleSheet(const Palette& p = current());
 
-inline constexpr int kIconSize = 24;        // ribbon tool icons
+inline constexpr int kIconSize = 30;        // ribbon tool icons
 inline constexpr int kSmallIconSize = 16;   // browser, nav bar, timeline
 inline constexpr int kPanelRadius = 8;
 

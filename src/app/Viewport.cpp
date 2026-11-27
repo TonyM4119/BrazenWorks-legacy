@@ -1,7 +1,10 @@
 #include "Viewport.h"
 
+
 #include <AIS_AnimationCamera.hxx>
 #include <AIS_MouseGesture.hxx>
+#include <AIS_TextLabel.hxx>
+#include <Font_NameOfFont.hxx>
 #include <Aspect_DisplayConnection.hxx>
 #include <Aspect_Grid.hxx>
 #include <Aspect_NeutralWindow.hxx>
@@ -15,12 +18,22 @@
 #include <OpenGl_View.hxx>
 #include <OpenGl_Window.hxx>
 #include <Graphic3d_Camera.hxx>
+#include <Prs3d_DatumAspect.hxx>
 #include <Prs3d_Drawer.hxx>
+#include <Prs3d_TextAspect.hxx>
+#include <Prs3d_LineAspect.hxx>
+#include <Prs3d_PointAspect.hxx>
+#include <Prs3d_ShadingAspect.hxx>
+#include <TCollection_ExtendedString.hxx>
 #include <Quantity_Color.hxx>
 #include <V3d_TypeOfOrientation.hxx>
 
+#include "Settings.h"
 #include "Theme.h"
 
+#include <QKeyEvent>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
 #include <QMouseEvent>
 #include <QWindow>
 
@@ -115,7 +128,8 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   if (auto grid = viewer_->Grid(Aspect_GT_Rectangular); !grid.IsNull()) {
     // Subtle lines like the UI concept: minor slightly above the background,
     // every tenth line a little stronger.
-    const QColor minor = theme::current().viewport.lighter(132);
+    const QColor minor = theme::current().light ? theme::current().viewport.darker(106)
+                                                 : theme::current().viewport.lighter(132);
     const QColor major = theme::current().viewportGrid;
     grid->SetColors(Quantity_Color(minor.redF(), minor.greenF(), minor.blueF(), Quantity_TOC_sRGB),
                     Quantity_Color(major.redF(), major.greenF(), major.blueF(), Quantity_TOC_sRGB));
@@ -127,34 +141,60 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   // Rounder curved surfaces: finer tessellation than OCCT's defaults
   // (chord deviation 0.1% of size, 20° angle).
   constexpr double kDegree = 3.14159265358979323846 / 180.0;
-  context_->DefaultDrawer()->SetDeviationCoefficient(0.0003);
-  context_->DefaultDrawer()->SetDeviationAngle(4.0 * kDegree);
+  const bool high = prefs::flag(prefs::kHighQuality);
+  context_->DefaultDrawer()->SetDeviationCoefficient(high ? 0.0003 : 0.001);
+  context_->DefaultDrawer()->SetDeviationAngle((high ? 4.0 : 12.0) * kDegree);
 
   viewCube_ = new AIS_ViewCube();
   viewCube_->SetViewAnimation(myViewAnimation);
   viewCube_->SetFixedAnimationLoop(false);
   viewCube_->SetAutoStartAnimation(true);
   viewCube_->SetDuration(0.4);
-  viewCube_->SetSize(55);
-  // Match the dark theme instead of OCCT's default white cube.
+  viewCube_->SetSize(68);
+  // Fusion-style cube: light faces, darker edges and corners, dark labels, and
+  // coloured X/Y/Z axes running from its origin corner.
   {
-    const theme::Palette& tp = theme::current();
-    auto occt = [](const QColor& c) { return Quantity_Color(c.redF(), c.greenF(), c.blueF(), Quantity_TOC_sRGB); };
-    viewCube_->SetBoxColor(occt(tp.panelBorder));
-    viewCube_->SetInnerColor(occt(tp.panel));
-    viewCube_->SetTextColor(occt(tp.text));
-    viewCube_->SetFontHeight(11);
-    viewCube_->SetRoundRadius(0.1);
-    viewCube_->SetDrawAxes(false);
+    auto rgb = [](int r, int g, int b) { return Quantity_Color(r / 255.0, g / 255.0, b / 255.0, Quantity_TOC_sRGB); };
+    viewCube_->SetBoxColor(rgb(236, 239, 242));
+    viewCube_->BoxEdgeStyle()->SetColor(rgb(196, 202, 209));
+    viewCube_->BoxCornerStyle()->SetColor(rgb(176, 183, 191));
+    viewCube_->SetInnerColor(rgb(120, 126, 133));
+    viewCube_->SetTextColor(rgb(70, 76, 84));
+    viewCube_->SetFont(Font_NOF_SANS_SERIF);
+    viewCube_->SetFontHeight(12);
+    viewCube_->SetRoundRadius(0.08);
+    viewCube_->SetBoxEdgeGap(0.0);
+    viewCube_->SetDrawAxes(true);
+    viewCube_->SetAxesLabels("X", "Y", "Z");
+    viewCube_->SetAxesPadding(1.0);
+    viewCube_->SetAxesRadius(1.1);
+    viewCube_->SetAxesConeRadius(0.0);
+    viewCube_->SetAxesSphereRadius(1.4);
+    // The cube's own datum style; otherwise it falls back to the shared default.
+    Handle(Prs3d_DatumAspect) datum = new Prs3d_DatumAspect();
+    viewCube_->Attributes()->SetDatumAspect(datum);
+    const std::pair<Prs3d_DatumParts, Quantity_Color> axes[] = {
+        {Prs3d_DatumParts_XAxis, rgb(229, 72, 77)},
+        {Prs3d_DatumParts_YAxis, rgb(61, 187, 79)},
+        {Prs3d_DatumParts_ZAxis, rgb(62, 124, 240)},
+    };
+    for (const auto& [part, color] : axes) {
+      datum->ShadingAspect(part)->SetColor(color);
+      datum->LineAspect(part)->SetColor(color);
+      datum->TextAspect(part)->SetColor(color);
+      datum->TextAspect(part)->SetFont(Font_NOF_SANS_SERIF);
+      datum->TextAspect(part)->SetHeight(14.0);
+    }
   }
   viewCube_->SetTransformPersistence(new Graphic3d_TransformPers(
-      Graphic3d_TMF_TriedronPers, Aspect_TOTP_RIGHT_UPPER, Vec2i(90, 90)));
+      Graphic3d_TMF_TriedronPers, Aspect_TOTP_RIGHT_UPPER, Vec2i(105, 105)));
 
   view_ = viewer_->CreateView();
   view_->SetImmediateUpdate(false);
   // Smooth edges: 4x multisample anti-aliasing for shaded faces, edges and grid.
-  view_->ChangeRenderingParams().NbMsaaSamples = 4;
-  view_->ChangeRenderingParams().IsAntialiasingEnabled = true;
+  const bool aa = prefs::flag(prefs::kAntialiasing);
+  view_->ChangeRenderingParams().NbMsaaSamples = aa ? 4 : 0;
+  view_->ChangeRenderingParams().IsAntialiasingEnabled = aa;
 
   setupMouseGestures();
 
@@ -186,14 +226,26 @@ Viewport::~Viewport() {
 void Viewport::setupMouseGestures() {
   auto& map = ChangeMouseGestureMap();  // typedef AIS_MouseGestureMap is gone in OCCT 8
   map.Clear();
-  map.Bind(Aspect_VKeyMouse_MiddleButton, AIS_MouseGesture_Pan);
+  // Default (Fusion): middle-drag pans, Shift+middle orbits. Preferences can swap them.
+  map.Bind(Aspect_VKeyMouse_MiddleButton, orbitWithMiddle_ ? AIS_MouseGesture_RotateOrbit : AIS_MouseGesture_Pan);
   map.Bind(Aspect_VKeyMouse(Aspect_VKeyMouse_MiddleButton) | Aspect_VKeyFlags(Aspect_VKeyFlags_SHIFT),
-           AIS_MouseGesture_RotateOrbit);
+           orbitWithMiddle_ ? AIS_MouseGesture_Pan : AIS_MouseGesture_RotateOrbit);
   switch (dragMode_) {
     case DragMode::Select: map.Bind(Aspect_VKeyMouse_LeftButton, AIS_MouseGesture_SelectRectangle); break;
     case DragMode::Orbit: map.Bind(Aspect_VKeyMouse_LeftButton, AIS_MouseGesture_RotateOrbit); break;
     case DragMode::Pan: map.Bind(Aspect_VKeyMouse_LeftButton, AIS_MouseGesture_Pan); break;
     case DragMode::Zoom: map.Bind(Aspect_VKeyMouse_LeftButton, AIS_MouseGesture_Zoom); break;
+  }
+}
+
+void Viewport::setNavigation(bool orbitWithMiddle, bool reverseZoom, bool animateCamera) {
+  orbitWithMiddle_ = orbitWithMiddle;
+  reverseZoom_ = reverseZoom;
+  animate_ = animateCamera;
+  if (tool_) {
+    setTool(tool_);  // rebinds, keeping left-drag for the tool
+  } else {
+    setupMouseGestures();
   }
 }
 
@@ -229,6 +281,13 @@ void Viewport::setGridVisible(bool visible) {
   update();
 }
 
+void Viewport::setGridSpacing(double stepMm, double extentMm) {
+  viewer_->SetRectangularGridValues(0.0, 0.0, stepMm, stepMm, 0.0);
+  viewer_->SetRectangularGridGraphicValues(extentMm, extentMm, 0.0);
+  view_->Invalidate();
+  update();
+}
+
 void Viewport::setBodyVisible(bool visible) {
   bodyVisible_ = visible;
   if (body_.IsNull()) return;
@@ -255,6 +314,12 @@ void Viewport::homeView() {
 }
 
 void Viewport::animateCamera(const std::function<void()>& applyTarget) {
+  if (!animate_) {
+    applyTarget();
+    view_->Invalidate();
+    update();
+    return;
+  }
   Handle(Graphic3d_Camera) start = new Graphic3d_Camera();
   start->Copy(view_->Camera());
   applyTarget();  // moves the camera to the goal without drawing
@@ -283,6 +348,13 @@ void Viewport::initializeGL() {
     return;
   }
 
+  {
+    auto str = [](const GLubyte* v) { return v ? QString::fromLatin1(reinterpret_cast<const char*>(v)) : QString(); };
+    QOpenGLFunctions* f = context()->functions();
+    glInfo_ = QString("%1 — %2 (OpenGL %3)")
+                  .arg(str(f->glGetString(GL_VENDOR)), str(f->glGetString(GL_RENDERER)),
+                       str(f->glGetString(GL_VERSION)));
+  }
   Handle(Aspect_NeutralWindow) window = Handle(Aspect_NeutralWindow)::DownCast(view_->Window());
   const bool firstInit = window.IsNull();
   if (firstInit) {
@@ -346,6 +418,7 @@ void Viewport::showBody(const TopoDS_Shape& body) {
   if (!body.IsNull()) {
     body_ = new AIS_Shape(body);
     body_->SetColor(Quantity_Color(0.73, 0.75, 0.78, Quantity_TOC_sRGB));
+    if (bodyTransparency_ > 0.0) body_->SetTransparency(bodyTransparency_);
     if (bodyVisible_) context_->Display(body_, AIS_Shaded, 0, false);
     applyDisplayMode();
   }
@@ -369,6 +442,8 @@ void Viewport::fitAll(bool animate) {
 
 void Viewport::mousePressEvent(QMouseEvent* e) {
   QOpenGLWidget::mousePressEvent(e);
+  setFocus();
+  if (tool_ && (e->button() == Qt::LeftButton || e->button() == Qt::RightButton) && tool_->mousePress(e)) return;
   if (!view_.IsNull() &&
       UpdateMouseButtons(toPoint(e->position(), devicePixelRatioF()), toVKeyMouse(e->buttons()),
                          toVKeyFlags(e->modifiers()), false)) {
@@ -378,6 +453,7 @@ void Viewport::mousePressEvent(QMouseEvent* e) {
 
 void Viewport::mouseReleaseEvent(QMouseEvent* e) {
   QOpenGLWidget::mouseReleaseEvent(e);
+  if (tool_ && (e->button() == Qt::LeftButton || e->button() == Qt::RightButton) && tool_->mouseRelease(e)) return;
   if (!view_.IsNull() &&
       UpdateMouseButtons(toPoint(e->position(), devicePixelRatioF()), toVKeyMouse(e->buttons()),
                          toVKeyFlags(e->modifiers()), false)) {
@@ -387,6 +463,7 @@ void Viewport::mouseReleaseEvent(QMouseEvent* e) {
 
 void Viewport::mouseMoveEvent(QMouseEvent* e) {
   QOpenGLWidget::mouseMoveEvent(e);
+  if (tool_ && tool_->mouseMove(e) && !(e->buttons() & Qt::MiddleButton)) return;
   if (!view_.IsNull() &&
       UpdateMousePosition(toPoint(e->position(), devicePixelRatioF()), toVKeyMouse(e->buttons()),
                           toVKeyFlags(e->modifiers()), false)) {
@@ -398,9 +475,143 @@ void Viewport::wheelEvent(QWheelEvent* e) {
   QOpenGLWidget::wheelEvent(e);
   if (view_.IsNull()) return;
   const Vec2i pos = toPoint(e->position(), devicePixelRatioF());
-  if (UpdateZoom(Aspect_ScrollDelta(pos, double(e->angleDelta().y()) / 8.0))) {
+  const double delta = double(e->angleDelta().y()) / 8.0 * (reverseZoom_ ? -1.0 : 1.0);
+  if (UpdateZoom(Aspect_ScrollDelta(pos, delta))) {
     update();
   }
+  if (tool_) tool_->viewChanged();
+}
+
+void Viewport::mouseDoubleClickEvent(QMouseEvent* e) {
+  if (tool_ && e->button() == Qt::LeftButton && tool_->mouseDoubleClick(e)) return;
+  QOpenGLWidget::mouseDoubleClickEvent(e);
+}
+
+void Viewport::keyPressEvent(QKeyEvent* e) {
+  if (tool_ && tool_->keyPress(e)) return;
+  QOpenGLWidget::keyPressEvent(e);
+}
+
+void Viewport::setTool(ViewportTool* tool) {
+  tool_ = tool;
+  setCursor(tool ? Qt::CrossCursor : Qt::ArrowCursor);
+  if (!tool) setupMouseGestures();
+  else {
+    // Left-drag belongs to the tool; keep middle-drag navigation.
+    auto& map = ChangeMouseGestureMap();
+    map.UnBind(Aspect_VKeyMouse_LeftButton);
+  }
+}
+
+namespace {
+
+Quantity_Color occtColor(const QColor& c) {
+  return Quantity_Color(c.redF(), c.greenF(), c.blueF(), Quantity_TOC_sRGB);
+}
+
+}  // namespace
+
+void Viewport::clearOverlay(const QString& layer) {
+  auto it = overlays_.find(layer);
+  if (it == overlays_.end()) return;
+  for (const auto& obj : *it) context_->Remove(obj, false);
+  overlays_.erase(it);
+  view_->Invalidate();
+  update();
+}
+
+void Viewport::setOverlay(const QString& layer, const Overlay& o) {
+  if (auto it = overlays_.find(layer); it != overlays_.end()) {
+    for (const auto& obj : *it) context_->Remove(obj, false);
+  }
+  std::vector<Handle(AIS_InteractiveObject)>& objects = overlays_[layer];
+  objects.clear();
+
+  auto show = [&](const Handle(AIS_InteractiveObject)& obj, int mode, Graphic3d_ZLayerId z) {
+    obj->SetZLayer(z);
+    context_->Display(obj, mode, -1, false);  // -1: not selectable
+    objects.push_back(obj);
+  };
+
+  for (const Overlay::Face& f : o.faces) {
+    if (f.shape.IsNull()) continue;
+    Handle(AIS_Shape) s = new AIS_Shape(f.shape);
+    s->SetColor(occtColor(f.color));
+    s->SetTransparency(f.transparency);
+    s->Attributes()->SetFaceBoundaryDraw(false);
+    show(s, AIS_Shaded, Graphic3d_ZLayerId_Topmost);
+  }
+  for (const Overlay::Curves& c : o.curves) {
+    if (c.shape.IsNull()) continue;
+    Handle(AIS_Shape) s = new AIS_Shape(c.shape);
+    Handle(Prs3d_LineAspect) line =
+        new Prs3d_LineAspect(occtColor(c.color), c.dashed ? Aspect_TOL_DASH : Aspect_TOL_SOLID, c.width);
+    s->Attributes()->SetWireAspect(line);
+    s->Attributes()->SetLineAspect(line);
+    s->Attributes()->SetFreeBoundaryAspect(line);
+    s->Attributes()->SetUnFreeBoundaryAspect(line);
+    show(s, AIS_WireFrame, Graphic3d_ZLayerId_Topmost);
+  }
+  for (const Overlay::Points& p : o.points) {
+    if (p.shape.IsNull()) continue;
+    Handle(AIS_Shape) s = new AIS_Shape(p.shape);
+    s->Attributes()->SetPointAspect(new Prs3d_PointAspect(Aspect_TOM_O_POINT, occtColor(p.color), p.size));
+    show(s, AIS_WireFrame, Graphic3d_ZLayerId_Topmost);
+  }
+  for (const Overlay::Label& l : o.labels) {
+    Handle(AIS_TextLabel) t = new AIS_TextLabel();
+    t->SetText(TCollection_ExtendedString(l.text.toUtf8().constData(), Standard_True));
+    t->SetPosition(l.position);
+    t->SetColor(occtColor(l.color));
+    t->SetHeight(l.height * devicePixelRatioF());
+    t->SetFont(Font_NOF_SANS_SERIF);
+    t->SetFontAspect(Font_FA_Bold);
+    if (l.background.isValid()) {
+      t->SetDisplayType(Aspect_TODT_SUBTITLE);
+      t->SetColorSubTitle(occtColor(l.background));
+    }
+    t->SetHJustification(Graphic3d_HTA_CENTER);
+    t->SetVJustification(Graphic3d_VTA_CENTER);
+    show(t, 0, Graphic3d_ZLayerId_Topmost);
+  }
+  view_->Invalidate();
+  update();
+}
+
+std::pair<gp_Pnt, gp_Dir> Viewport::rayAt(const QPointF& pos) const {
+  const qreal dpr = devicePixelRatioF();
+  double x, y, z, vx, vy, vz;
+  view_->ConvertWithProj(int(pos.x() * dpr), int(pos.y() * dpr), x, y, z, vx, vy, vz);
+  return {gp_Pnt(x, y, z), gp_Dir(vx, vy, vz)};
+}
+
+QPointF Viewport::project(const gp_Pnt& p) const {
+  int xp = 0, yp = 0;
+  view_->Convert(p.X(), p.Y(), p.Z(), xp, yp);
+  const qreal dpr = devicePixelRatioF();
+  return QPointF(xp / dpr, yp / dpr);
+}
+
+void Viewport::lookAlong(const gp_Dir& normal, const gp_Dir& up) {
+  auto apply = [this, normal, up] {
+    view_->SetProj(normal.X(), normal.Y(), normal.Z());
+    view_->SetUp(up.X(), up.Y(), up.Z());
+    view_->FitAll(0.25, false);
+  };
+  if (view_->Window().IsNull()) {
+    apply();
+    return;
+  }
+  animateCamera(apply);
+}
+
+void Viewport::setBodyTransparency(double transparency) {
+  bodyTransparency_ = transparency;
+  if (body_.IsNull()) return;
+  body_->SetTransparency(transparency);
+  context_->Redisplay(body_, false);
+  view_->Invalidate();
+  update();
 }
 
 void Viewport::handleViewRedraw(const Handle(AIS_InteractiveContext)& ctx,
