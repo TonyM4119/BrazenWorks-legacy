@@ -8,8 +8,9 @@
 
 use crate::kernel::{self, Kernel};
 use crate::sketch::{
-    find_regions, ConstraintId, EntityId, Geometry, Loop, OriginPlane, Region, RegionKey, Segment,
-    Sketch, SketchConstraint, SketchError, SketchPlane, SolveStatus, SolveSummary, Transform,
+    find_regions, ConstraintId, CopyGroup, CopyKind, EntityId, Geometry, Loop, OriginPlane, Region,
+    RegionKey, Segment, Sketch, SketchConstraint, SketchError, SketchPlane, SolveStatus,
+    SolveSummary, Transform,
 };
 use crate::timeline::{ExtrudeSource, Feature, FeatureId, FeatureKind, Timeline};
 use crate::units::{self, LengthUnit};
@@ -166,6 +167,27 @@ mod bridge {
         driven: bool,
         /// Implied by the other constraints.
         redundant: bool,
+        /// Dimensions: where the label was placed, relative to its anchor.
+        has_label: bool,
+        label_x: f64,
+        label_y: f64,
+    }
+
+    /// A pattern or mirror that can be edited. kind 0 rectangular (a, b
+    /// direction; c, d spacing; n1 × n2), 1 circular (a, b centre; c angle;
+    /// n1 count), 2 mirror (axis). id 0: none.
+    struct CopyGroupInfo {
+        id: u64,
+        kind: u8,
+        sources: Vec<u64>,
+        copies: Vec<u64>,
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        n1: usize,
+        n2: usize,
+        axis: u64,
     }
 
     enum SketchSolveStatus {
@@ -425,6 +447,30 @@ mod bridge {
             c: f64,
             copy: bool,
         ) -> Result<Vec<u64>>;
+        fn sketch_set_label(
+            t: &mut Timeline,
+            sketch: u64,
+            constraint: u64,
+            x: f64,
+            y: f64,
+        ) -> Result<()>;
+        fn sketch_group_of(t: &Timeline, sketch: u64, curve: u64) -> Result<CopyGroupInfo>;
+        fn sketch_edit_group(
+            t: &mut Timeline,
+            sketch: u64,
+            group: CopyGroupInfo,
+        ) -> Result<Vec<u64>>;
+        fn sketch_delete_group(
+            t: &mut Timeline,
+            sketch: u64,
+            group: u64,
+            delete_copies: bool,
+        ) -> Result<()>;
+        /// Clipboard (shared by every sketch in the app): copy curves, paste
+        /// them moved by (dx, dy). clipboard_centre: [x, y] or empty.
+        fn sketch_copy(t: &Timeline, sketch: u64, curves: Vec<u64>) -> Result<usize>;
+        fn sketch_paste(t: &mut Timeline, sketch: u64, dx: f64, dy: f64) -> Result<Vec<u64>>;
+        fn sketch_clipboard_centre() -> Vec<f64>;
         fn sketch_auto_constrain(t: &mut Timeline, sketch: u64) -> Result<usize>;
         fn sketch_loose_ends(t: &Timeline, sketch: u64) -> Result<Vec<u64>>;
         fn sketch_add_arc(
@@ -1350,6 +1396,9 @@ fn sketch_constraints(
                 conflicting: summary.conflicting.contains(id),
                 driven: s.is_driven(*id),
                 redundant: summary.redundant.contains(id),
+                has_label: s.label(*id).is_some(),
+                label_x: s.label(*id).map_or(0.0, |l| l[0]),
+                label_y: s.label(*id).map_or(0.0, |l| l[1]),
             }
         })
         .collect())
@@ -1629,4 +1678,165 @@ fn sketch_auto_constrain(t: &mut Timeline, sketch: u64) -> Result<usize, String>
 
 fn sketch_loose_ends(t: &Timeline, sketch: u64) -> Result<Vec<u64>, String> {
     Ok(raw(sketch_ref(t, sketch)?.loose_ends()))
+}
+
+// ---- Labels, editable patterns, clipboard ---------------------------------------
+
+fn sketch_set_label(
+    t: &mut Timeline,
+    sketch: u64,
+    constraint: u64,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    sketch_mut(t, sketch)?
+        .set_label(ConstraintId(constraint), [x, y])
+        .map_err(err)
+}
+
+fn group_info(g: &CopyGroup) -> bridge::CopyGroupInfo {
+    let mut info = bridge::CopyGroupInfo {
+        id: g.id,
+        kind: 0,
+        sources: raw(g.sources.clone()),
+        copies: raw(g.copies.clone()),
+        a: 0.0,
+        b: 0.0,
+        c: 0.0,
+        d: 0.0,
+        n1: 0,
+        n2: 0,
+        axis: 0,
+    };
+    match g.kind {
+        CopyKind::Rect {
+            dir,
+            nx,
+            ny,
+            sx,
+            sy,
+        } => {
+            (info.a, info.b, info.c, info.d, info.n1, info.n2) = (dir[0], dir[1], sx, sy, nx, ny);
+        }
+        CopyKind::Circ {
+            centre,
+            count,
+            angle,
+        } => {
+            info.kind = 1;
+            (info.a, info.b, info.c, info.n1) = (centre[0], centre[1], angle, count);
+        }
+        CopyKind::Mirror { axis } => {
+            info.kind = 2;
+            info.axis = axis.0;
+        }
+    }
+    info
+}
+
+fn sketch_group_of(t: &Timeline, sketch: u64, curve: u64) -> Result<bridge::CopyGroupInfo, String> {
+    let s = sketch_ref(t, sketch)?;
+    Ok(match s.group_of(EntityId(curve)) {
+        Some(g) => group_info(g),
+        None => group_info(&CopyGroup {
+            id: 0,
+            kind: CopyKind::Mirror { axis: EntityId(0) },
+            sources: Vec::new(),
+            copies: Vec::new(),
+        }),
+    })
+}
+
+fn sketch_edit_group(
+    t: &mut Timeline,
+    sketch: u64,
+    g: bridge::CopyGroupInfo,
+) -> Result<Vec<u64>, String> {
+    let kind = match g.kind {
+        0 => CopyKind::Rect {
+            dir: [g.a, g.b],
+            nx: g.n1,
+            ny: g.n2,
+            sx: g.c,
+            sy: g.d,
+        },
+        1 => CopyKind::Circ {
+            centre: [g.a, g.b],
+            count: g.n1,
+            angle: g.c,
+        },
+        _ => CopyKind::Mirror {
+            axis: EntityId(g.axis),
+        },
+    };
+    sketch_mut(t, sketch)?
+        .edit_group(g.id, kind)
+        .map(raw)
+        .map_err(err)
+}
+
+fn sketch_delete_group(
+    t: &mut Timeline,
+    sketch: u64,
+    group: u64,
+    delete_copies: bool,
+) -> Result<(), String> {
+    sketch_mut(t, sketch)?
+        .delete_group(group, delete_copies)
+        .map_err(err)
+}
+
+static CLIPBOARD: std::sync::Mutex<Option<Sketch>> = std::sync::Mutex::new(None);
+
+fn sketch_copy(t: &Timeline, sketch: u64, curves: Vec<u64>) -> Result<usize, String> {
+    let clip = sketch_ref(t, sketch)?.extract(&ids(curves));
+    let n = clip
+        .entities()
+        .iter()
+        .filter(|e| !matches!(e.geometry, Geometry::Point { .. }))
+        .count();
+    if n == 0 {
+        return Err("select lines, circles or other curves to copy".into());
+    }
+    *CLIPBOARD
+        .lock()
+        .map_err(|_| "clipboard unavailable".to_string())? = Some(clip);
+    Ok(n)
+}
+
+fn sketch_paste(t: &mut Timeline, sketch: u64, dx: f64, dy: f64) -> Result<Vec<u64>, String> {
+    let clip = CLIPBOARD
+        .lock()
+        .map_err(|_| "clipboard unavailable".to_string())?
+        .clone()
+        .ok_or_else(|| "nothing has been copied".to_string())?;
+    Ok(raw(sketch_mut(t, sketch)?.paste(&clip, [dx, dy])))
+}
+
+fn sketch_clipboard_centre() -> Vec<f64> {
+    let Ok(guard) = CLIPBOARD.lock() else {
+        return Vec::new();
+    };
+    let Some(clip) = guard.as_ref() else {
+        return Vec::new();
+    };
+    let pts: Vec<[f64; 2]> = clip
+        .entities()
+        .iter()
+        .filter_map(|e| match e.geometry {
+            Geometry::Point { x, y } => Some([x, y]),
+            _ => None,
+        })
+        .collect();
+    if pts.is_empty() {
+        return Vec::new();
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for p in pts {
+        x0 = x0.min(p[0]);
+        y0 = y0.min(p[1]);
+        x1 = x1.max(p[0]);
+        y1 = y1.max(p[1]);
+    }
+    vec![(x0 + x1) / 2.0, (y0 + y1) / 2.0]
 }

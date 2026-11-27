@@ -135,6 +135,288 @@ geom::Plane geomPlane(const model::PlaneInfo& p) {
   return g;
 }
 
+// ---- Dimension graphics ----------------------------------------------------------
+
+// What a dimension measures from: an entity, or a bare spot (a pick not yet
+// resolved to a point).
+struct DimRef {
+  const model::SketchEntityInfo* e = nullptr;
+  double u = 0, v = 0;
+};
+
+// The drawn parts of a dimension, in sketch coordinates.
+struct DimShape {
+  std::vector<geom::Seg2> lines;                   // dimension, extension and leader lines
+  std::vector<std::vector<geom::Point2>> arrows;   // filled arrowheads
+  double lu = 0, lv = 0;                           // label
+  double au = 0, av = 0;                           // anchor: labels are stored relative to it
+};
+
+struct V2 {
+  double x = 0, y = 0;
+};
+V2 operator+(V2 a, V2 b) { return {a.x + b.x, a.y + b.y}; }
+V2 operator-(V2 a, V2 b) { return {a.x - b.x, a.y - b.y}; }
+V2 operator*(V2 a, double k) { return {a.x * k, a.y * k}; }
+double dot(V2 a, V2 b) { return a.x * b.x + a.y * b.y; }
+double len(V2 a) { return std::hypot(a.x, a.y); }
+V2 unitOr(V2 a, V2 fallback) {
+  const double l = len(a);
+  return l > 1e-12 ? a * (1 / l) : fallback;
+}
+V2 left(V2 a) { return {-a.y, a.x}; }
+
+V2 spot(const DimRef& r) {
+  if (r.e && r.e->kind == EK::Point) return {r.e->x0, r.e->y0};
+  return {r.u, r.v};
+}
+
+geom::Seg2 seg(V2 a, V2 b) {
+  geom::Seg2 s;
+  s.x0 = a.x, s.y0 = a.y, s.x1 = b.x, s.y1 = b.y;
+  return s;
+}
+
+void arrow(DimShape& d, V2 tip, V2 towards, double upp) {
+  const V2 w = unitOr(towards, {1, 0}), n = left(w);
+  const V2 base = tip - w * (9 * upp);
+  const V2 p1 = base + n * (3 * upp), p2 = base - n * (3 * upp);
+  d.arrows.push_back({{tip.x, tip.y}, {p1.x, p1.y}, {p2.x, p2.y}});
+}
+
+// A linear dimension between p1 and p2 measured along `dir`, its line
+// through the label.
+void linear(DimShape& d, V2 p1, V2 p2, V2 dir, V2 label, double upp) {
+  const V2 n = left(dir);
+  const V2 e1 = p1 + n * dot(label - p1, n), e2 = p2 + n * dot(label - p2, n);
+  // Extension lines: a small gap off the geometry, a little past the line.
+  auto extension = [&](V2 p, V2 e) {
+    const V2 along = e - p;
+    const double l = len(along);
+    if (l < 3 * upp) return;
+    const V2 u = along * (1 / l);
+    d.lines.push_back(seg(p + u * (3 * upp), e + u * (4 * upp)));
+  };
+  extension(p1, e1);
+  extension(p2, e2);
+  d.lines.push_back(seg(e1, e2));
+  // Past either end: carry the line out to the label.
+  const double t = dot(label - e1, dir), span = dot(e2 - e1, dir);
+  if (t < 0) d.lines.push_back(seg(e1, e1 + dir * t));
+  if (t > span) d.lines.push_back(seg(e2, e2 + dir * (t - span)));
+  if (std::abs(span) > 1e-12) {
+    const V2 inward = dir * (span > 0 ? 1.0 : -1.0);
+    if (std::abs(span) >= 30 * upp) {
+      arrow(d, e1, inward * -1.0, upp);
+      arrow(d, e2, inward, upp);
+    } else {
+      // No room between the lines: arrows outside, pointing in, with tails.
+      arrow(d, e1, inward, upp);
+      arrow(d, e2, inward * -1.0, upp);
+      d.lines.push_back(seg(e1, e1 - inward * (18 * upp)));
+      d.lines.push_back(seg(e2, e2 + inward * (18 * upp)));
+    }
+  }
+}
+
+void addDimensionGraphics(Overlay& o, const geom::Plane& gp, const DimShape& d, const QColor& color) {
+  if (!d.lines.empty()) o.curves.push_back({geom::makeCurves(gp, d.lines), color, 1.0, false});
+  for (const auto& a : d.arrows) o.faces.push_back({geom::makePolygonFace(gp, {a}), color, 0.0});
+}
+
+// Builds a dimension's drawing. `offset` is a stored label offset from the
+// anchor, `absolute` a label spot (while placing); neither: a default spot.
+bool dimShape(K kind, const DimRef& a, const DimRef& b, double upp, const double* offset, const double* absolute,
+              DimShape& d, double value = -1) {
+  const auto* ea = a.e;
+  const auto* eb = b.e;
+  auto place = [&](V2 anchor, V2 fallback) {
+    d.au = anchor.x, d.av = anchor.y;
+    V2 l = fallback;
+    if (absolute) l = {absolute[0], absolute[1]};
+    else if (offset) l = anchor + V2{offset[0], offset[1]};
+    d.lu = l.x, d.lv = l.y;
+    return l;
+  };
+  auto linearBetween = [&](V2 p1, V2 p2, V2 dir, double side) {
+    const V2 mid = (p1 + p2) * 0.5;
+    const double span = std::abs(dot(p2 - p1, dir));
+    // Tight gaps put the label past the end instead of between the arrows.
+    const V2 fallback = span < 60 * upp ? mid + left(dir) * (side * 10 * upp) + dir * (span / 2 + 34 * upp)
+                                        : mid + left(dir) * (side * 22 * upp);
+    const V2 l = place(mid, fallback);
+    linear(d, p1, p2, dir, l, upp);
+    return true;
+  };
+  auto circleOf = [](const model::SketchEntityInfo* e, V2& c, double& r) {
+    if (!e || (e->kind != EK::Circle && e->kind != EK::Arc)) return false;
+    c = {e->x0, e->y0}, r = e->radius;
+    return true;
+  };
+  auto footOn = [](const model::SketchEntityInfo* line, V2 p) {
+    const V2 s{line->x0, line->y0}, dv{line->x1 - line->x0, line->y1 - line->y0};
+    const double l2 = std::max(dot(dv, dv), 1e-18);
+    return s + dv * (dot(p - s, dv) / l2);
+  };
+
+  switch (kind) {
+    case K::Length: {
+      if (!ea || ea->kind != EK::Line) return false;
+      const V2 p1{ea->x0, ea->y0}, p2{ea->x1, ea->y1};
+      return linearBetween(p1, p2, unitOr(p2 - p1, {1, 0}), -1.0);
+    }
+    case K::Distance:
+    case K::HorizontalDistance:
+    case K::VerticalDistance: {
+      const V2 p1 = spot(a), p2 = spot(b);
+      const V2 dir = kind == K::HorizontalDistance ? V2{1, 0}
+                     : kind == K::VerticalDistance ? V2{0, 1}
+                                                   : unitOr(p2 - p1, {1, 0});
+      return linearBetween(p1, p2, dir, 1.0);
+    }
+    case K::PointLineDistance: {
+      if (!eb) return false;
+      const V2 p1 = spot(a), p2 = footOn(eb, p1);
+      const V2 along{eb->x1 - eb->x0, eb->y1 - eb->y0};
+      return linearBetween(p1, p2, unitOr(p2 - p1, left(unitOr(along, {1, 0}))), 1.0);
+    }
+    case K::LineDistance: {
+      if (!ea || !eb) return false;
+      const V2 p1{(ea->x0 + ea->x1) / 2, (ea->y0 + ea->y1) / 2}, p2 = footOn(eb, p1);
+      const V2 along = unitOr({ea->x1 - ea->x0, ea->y1 - ea->y0}, {1, 0});
+      return linearBetween(p1, p2, unitOr(p2 - p1, left(along)), 1.0);
+    }
+    case K::PointCircleDistance: {
+      V2 c;
+      double r;
+      if (!circleOf(eb, c, r)) return false;
+      const V2 p = spot(a), u = unitOr(p - c, {1, 0});
+      return linearBetween(p, c + u * r, unitOr(p - (c + u * r), u), 1.0);
+    }
+    case K::LineCircleDistance: {
+      V2 c;
+      double r;
+      if (!ea || !circleOf(eb, c, r)) return false;
+      const V2 f = footOn(ea, c), u = unitOr(f - c, {0, 1});
+      return linearBetween(f, c + u * r, u, 1.0);
+    }
+    case K::CircleDistance: {
+      V2 ca, cb;
+      double ra, rb;
+      if (!circleOf(ea, ca, ra) || !circleOf(eb, cb, rb)) return false;
+      const V2 u = unitOr(cb - ca, {1, 0});
+      const double dd = len(cb - ca);
+      V2 p1, p2;
+      if (dd >= std::abs(ra - rb)) {
+        p1 = ca + u * ra, p2 = cb - u * rb;  // side by side
+      } else if (ra >= rb) {
+        p1 = cb + u * rb, p2 = ca + u * ra;  // b inside a
+      } else {
+        p1 = ca + u * ra, p2 = cb + u * rb;
+      }
+      return linearBetween(p1, p2, u, 1.0);
+    }
+    case K::Radius:
+    case K::Diameter: {
+      V2 c;
+      double r;
+      if (!circleOf(ea, c, r)) return false;
+      double ang = -kPi / 4;
+      if (ea->kind == EK::Arc) {
+        const double a0 = std::atan2(ea->y1 - ea->y0, ea->x1 - ea->x0);
+        ang = a0 + norm2pi(std::atan2(ea->y2 - ea->y0, ea->x2 - ea->x0) - a0) / 2;
+      }
+      const V2 l = place(c, c + V2{std::cos(ang), std::sin(ang)} * (r + 26 * upp));
+      const V2 u = unitOr(l - c, {1, 0});
+      const V2 edge = c + u * r;
+      if (kind == K::Diameter) {
+        const V2 far = c - u * r;
+        d.lines.push_back(seg(far, edge));
+        arrow(d, edge, u, upp);
+        arrow(d, far, u * -1.0, upp);
+      } else {
+        d.lines.push_back(seg(c, edge));
+        arrow(d, edge, u, upp);
+      }
+      if (len(l - c) > r) d.lines.push_back(seg(edge, l));
+      return true;
+    }
+    case K::MajorRadius:
+    case K::MinorRadius: {
+      if (!ea) return false;
+      const V2 c{ea->x0, ea->y0};
+      const V2 m = unitOr({ea->x1 - ea->x0, ea->y1 - ea->y0}, {1, 0});
+      const V2 axis = kind == K::MajorRadius ? m : left(m);
+      const double r = kind == K::MajorRadius ? ea->radius : ea->minor;
+      const V2 mid = c + axis * (r / 2);
+      const V2 l = place(c, mid + left(axis) * (14 * upp));
+      d.lines.push_back(seg(c, c + axis * r));
+      arrow(d, c + axis * r, axis, upp);
+      if (len(l - mid) > 24 * upp) d.lines.push_back(seg(mid, l));
+      return true;
+    }
+    case K::Angle: {
+      if (!ea || !eb || ea->kind != EK::Line || eb->kind != EK::Line) return false;
+      const V2 a0{ea->x0, ea->y0}, a1{ea->x1, ea->y1}, b0{eb->x0, eb->y0}, b1{eb->x1, eb->y1};
+      const V2 da = a1 - a0, db = b1 - b0;
+      const double den = da.x * db.y - da.y * db.x;
+      if (std::abs(den) < 1e-12) {
+        place((a0 + b0) * 0.5, (a0 + b0) * 0.5);
+        return true;
+      }
+      const double t = ((b0.x - a0.x) * db.y - (b0.y - a0.y) * db.x) / den;
+      const V2 i = a0 + da * t;
+      // Each line's direction away from the corner (towards its far end).
+      V2 ua = unitOr(len(a1 - i) >= len(a0 - i) ? a1 - i : a0 - i, {1, 0});
+      V2 ub = unitOr(len(b1 - i) >= len(b0 - i) ? b1 - i : b0 - i, {0, 1});
+      // The arc spans the angle the dimension holds: flip one side when the
+      // lines' far ends open the other (supplementary) angle.
+      if (value >= 0) {
+        const double between = std::acos(std::clamp(dot(ua, ub), -1.0, 1.0));
+        if (std::abs(between - value) > std::abs(kPi - between - value)) ub = ub * -1.0;
+      }
+      // Of the two opposite sectors with that angle, the one facing the label.
+      V2 bis = unitOr(ua + ub, left(ua));
+      if (absolute || offset) {
+        const V2 want = absolute ? V2{absolute[0], absolute[1]} - i : V2{offset[0], offset[1]};
+        if (dot(want, bis) < 0) ua = ua * -1.0, ub = ub * -1.0, bis = bis * -1.0;
+      }
+      const V2 l = place(i, i + bis * (40 * upp));
+      const double rho = std::max(len(l - i), 12 * upp);
+      // The arc runs counter-clockwise from one line to the other.
+      const bool ccw = ua.x * ub.y - ua.y * ub.x > 0;
+      const V2 from = ccw ? ua : ub, to = ccw ? ub : ua;
+      geom::Seg2 arc;
+      arc.kind = geom::Seg2::Kind::Arc;
+      arc.cx = i.x, arc.cy = i.y, arc.radius = rho, arc.ccw = true;
+      arc.x0 = i.x + from.x * rho, arc.y0 = i.y + from.y * rho, arc.x1 = i.x + to.x * rho, arc.y1 = i.y + to.y * rho;
+      d.lines.push_back(arc);
+      arrow(d, {arc.x0, arc.y0}, left(from) * -1.0, upp);
+      arrow(d, {arc.x1, arc.y1}, left(to), upp);
+      // Extension lines when the arc lies past a line's end.
+      for (auto [u, p, q] : {std::tuple{ua, a0, a1}, std::tuple{ub, b0, b1}}) {
+        const double reach = std::max(dot(p - i, u), dot(q - i, u));
+        if (rho > reach + 2 * upp) d.lines.push_back(seg(i + u * (reach + 3 * upp), i + u * (rho + 4 * upp)));
+      }
+      return true;
+    }
+    case K::ArcLength: {
+      V2 c;
+      double r;
+      if (!circleOf(ea, c, r)) return false;
+      const double a0 = std::atan2(ea->y1 - ea->y0, ea->x1 - ea->x0);
+      const double mid = a0 + norm2pi(std::atan2(ea->y2 - ea->y0, ea->x2 - ea->x0) - a0) / 2;
+      const V2 u{std::cos(mid), std::sin(mid)};
+      place(c + u * r, c + u * (r + 22 * upp));
+      return true;
+    }
+    default: {
+      const V2 p1 = spot(a), p2 = spot(b);
+      return linearBetween(p1, p2, unitOr(p2 - p1, {1, 0}), 1.0);
+    }
+  }
+}
+
 QString glyph(K k) {
   switch (k) {
     case K::Horizontal: case K::HorizontalPoints: return "H";
@@ -495,6 +777,7 @@ void SketchEditor::resetDraft() {
   opCurves_.clear();
   opStage_ = 0;
   guides_.clear();
+  placing_ = false;
 }
 
 void SketchEditor::hintForMode() {
@@ -583,7 +866,7 @@ void SketchEditor::reload() {
 }
 
 void SketchEditor::clearDisplay() {
-  for (const char* layer : {"sketch", "sketch-hover", "sketch-preview"}) view_->clearOverlay(layer);
+  for (const char* layer : {"sketch", "sketch-hover", "sketch-preview", "sketch-box"}) view_->clearOverlay(layer);
 }
 
 // ---- Mouse ----------------------------------------------------------------------
@@ -597,6 +880,10 @@ bool SketchEditor::mousePress(QMouseEvent* e) {
       const Hit h = hitTest(pos, true, true);
       if (h.kind == Hit::Label) {
         showDimensionMenu(h.id, pos);
+        return true;
+      }
+      if (h.kind == Hit::Curve) {
+        showCurveMenu(h.id, pos);
         return true;
       }
     }
@@ -625,6 +912,12 @@ bool SketchEditor::mousePress(QMouseEvent* e) {
         if (!add) selected_.clear(), selectedCon_.clear();
         if (selectedCon_.contains(h.id) && add) selectedCon_.remove(h.id);
         else selectedCon_.insert(h.id);
+        for (const auto& c : constraints_)
+          if (c.id == h.id && c.is_dimension) {
+            labelDrag_ = h.id;
+            labelMoved_ = false;
+            dragBefore_ = std::make_unique<rust::Box<model::Timeline>>(model::timeline_clone(tl()));
+          }
       } else if (h.kind == Hit::Point || h.kind == Hit::Curve) {
         if (!add && !selected_.contains(h.id)) selected_.clear(), selectedCon_.clear();
         if (add && selected_.contains(h.id)) selected_.remove(h.id);
@@ -634,6 +927,9 @@ bool SketchEditor::mousePress(QMouseEvent* e) {
         toPlane(pos, dragU_, dragV_);
       } else {
         if (!add) selected_.clear(), selectedCon_.clear();
+        boxing_ = true;
+        boxStart_ = pos;
+        boxAdd_ = add;
       }
       redraw();
       return true;
@@ -659,6 +955,12 @@ bool SketchEditor::mousePress(QMouseEvent* e) {
       const bool side = mode_ == Mode::Offset && opStage_ == 1;
       Hit h = anchor ? snap(pos) : hitTest(pos, mode_ == Mode::Fillet || mode_ == Mode::Chamfer);
       if (side) toPlane(pos, h.u, h.v);
+      if (picksCurves(mode_) && opStage_ == 0 && mode_ != Mode::Offset && h.kind != Hit::Curve) {
+        boxing_ = true;
+        boxStart_ = pos;
+        boxAdd_ = true;
+        return true;
+      }
       clickModify(h, pos, e->modifiers());
       return true;
     }
@@ -683,6 +985,16 @@ bool SketchEditor::mouseMove(QMouseEvent* e) {
     return false;
   }
 
+  if (boxing_ && (e->buttons() & Qt::LeftButton)) {
+    drawBox();
+    return true;
+  }
+  if (labelDrag_ && (e->buttons() & Qt::LeftButton)) {
+    if (!labelMoved_ && QLineF(pressPos_, cursor_).length() < 4) return true;
+    labelMoved_ = true;
+    dragLabel(cursor_);
+    return true;
+  }
   if (pressed_ && mode_ == Mode::Select && (e->buttons() & Qt::LeftButton)) {
     if (!dragging_ && QLineF(pressPos_, cursor_).length() < 4) return true;
     double u, v;
@@ -739,6 +1051,22 @@ bool SketchEditor::mouseMove(QMouseEvent* e) {
 
 bool SketchEditor::mouseRelease(QMouseEvent* e) {
   if (e->button() != Qt::LeftButton) return e->button() == Qt::RightButton;
+  if (labelDrag_) {
+    labelDrag_ = 0;
+    if (labelMoved_ && dragBefore_) {
+      host_.pushUndo(std::move(*dragBefore_));
+      emit edited();
+    }
+    dragBefore_.reset();
+    labelMoved_ = false;
+    return true;
+  }
+  if (boxing_) {
+    boxing_ = false;
+    view_->clearOverlay("sketch-box");
+    if (QLineF(boxStart_, e->position()).length() >= 4) finishBox(e->position());
+    return true;
+  }
   if (dragging_ && dragBefore_) {
     host_.pushUndo(std::move(*dragBefore_));
     dragBefore_.reset();
@@ -776,6 +1104,14 @@ bool SketchEditor::mouseDoubleClick(QMouseEvent* e) {
 }
 
 bool SketchEditor::keyPress(QKeyEvent* e) {
+  if (e->modifiers() == Qt::ControlModifier) {
+    switch (e->key()) {
+      case Qt::Key_C: copySelection(); return true;
+      case Qt::Key_X: cutSelection(); return true;
+      case Qt::Key_V: paste(); return true;
+      default: break;
+    }
+  }
   if (e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) return false;
   // While drawing, digits or Tab go to the size box (like Fusion and MitCAD).
   if (sizeBoxCount() > 0) {
@@ -826,6 +1162,10 @@ bool SketchEditor::keyPress(QKeyEvent* e) {
       }
       if (picksCurves(mode_) && opStage_ == 0) {
         finishPicking();
+        return true;
+      }
+      if (mode_ == Mode::Dimension && placing_) {
+        clickDimension(Hit{}, hasCursor_ ? cursor_ : QPointF(view_->width() / 2.0, view_->height() / 2.0));
         return true;
       }
       if (mode_ == Mode::Dimension && picks_.size() == 1 && picks_[0].kind == Hit::Curve) {
@@ -1267,6 +1607,13 @@ double SketchEditor::measure(K kind, const Hit& a, const Hit& b) const {
 }
 
 void SketchEditor::clickDimension(const Hit& h, const QPointF& pos) {
+  if (placing_) {
+    placing_ = false;
+    PendingDimension d = pending_;
+    d.placed = toPlane(pos, d.lu, d.lv);
+    openValueEditor(d, pos, measure(d.kind, d.a, d.b));
+    return;
+  }
   if (h.kind == Hit::Label) {
     for (const auto& c : constraints_) {
       if (c.id != h.id || !c.is_dimension) continue;
@@ -1316,7 +1663,11 @@ void SketchEditor::clickDimension(const Hit& h, const QPointF& pos) {
           emit message(tr("Splines are shaped by their points: dimension those instead."));
           break;
       }
-      if (ok) openValueEditor(d, pos, measure(d.kind, d.a, {}));
+      if (ok) {
+        d.placed = true;
+        toPlane(pos, d.lu, d.lv);
+        openValueEditor(d, pos, measure(d.kind, d.a, {}));
+      }
     }
     picks_.clear();
     drawPreview();
@@ -1361,7 +1712,9 @@ void SketchEditor::clickDimension(const Hit& h, const QPointF& pos) {
     return;
   }
   d.a = a, d.b = b;
-  openValueEditor(d, pos, measure(d.kind, a, b));
+  pending_ = d;
+  placing_ = true;
+  emit message(tr("Click where the dimension goes."));
   drawPreview();
 }
 
@@ -1512,7 +1865,16 @@ void SketchEditor::commitValue() {
     std::uint64_t a = d.a.id, b = d.b.id;
     if (d.a.kind == Hit::Origin || (d.a.kind == Hit::Point && !a)) a = resolve(d.a);
     if (d.b.kind == Hit::Origin || (d.b.kind == Hit::Point && !b)) b = resolve(d.b);
-    return applyResult(model::sketch_add_constraint(tl(), sketch_, d.kind, a, b, 0, value), d.kind, a, b, 0);
+    if (!applyResult(model::sketch_add_constraint(tl(), sketch_, d.kind, a, b, 0, value), d.kind, a, b, 0))
+      return false;
+    if (d.placed) {
+      // The newest constraint is the one just added (driven or not).
+      std::uint64_t newest = 0;
+      for (const auto& c : model::sketch_constraints(tl(), sketch_)) newest = std::max(newest, c.id);
+      reload();
+      storeLabel(newest, d.lu, d.lv);
+    }
+    return true;
   });
 }
 
@@ -1829,124 +2191,79 @@ void SketchEditor::redraw() {
       }
     }
   };
-  std::set<std::pair<std::uint64_t, int>> tagged;
+  auto refOf = [this](std::uint64_t id) {
+    DimRef r;
+    r.e = entity(id);
+    return r;
+  };
+  // Screen boxes already taken: tags step aside so nothing overlaps.
+  std::vector<QRectF> taken;
+  auto boxAt = [&](double u, double v, const QString& text, bool dim) {
+    const QPointF c = view_->project(world(u, v));
+    const double w = (dim ? 8.5 : 7.0) * text.size() + 12, h = dim ? 20 : 16;
+    return QRectF(c.x() - w / 2, c.y() - h / 2, w, h);
+  };
+  auto isFree = [&](const QRectF& r) {
+    return std::none_of(taken.begin(), taken.end(), [&](const QRectF& t) { return t.intersects(r); });
+  };
+
+  // Dimensions first: they matter more and keep their spots.
   for (const auto& c : constraints_) {
+    if (!c.is_dimension || !showDims_) continue;
     const bool sel = selectedCon_.contains(c.id);
-    if (c.is_dimension) {
-      if (!showDims_) continue;
-      const QColor color = sel ? pal.accent : c.conflicting ? pal.danger : c.driven ? pal.textMuted : pal.text;
-      const auto* ea = entity(c.a);
-      const auto* eb = entity(c.b);
-      double u = 0, v = 0;
-      auto pointPos = [](const model::SketchEntityInfo* e, double& x, double& y) {
-        if (e) x = e->x0, y = e->y0;
-      };
-      switch (c.kind) {
-        case K::Length:
-          if (!ea) continue;
-          {
-            const double dx = ea->x1 - ea->x0, dy = ea->y1 - ea->y0, len = std::max(std::hypot(dx, dy), 1e-12);
-            // Opposite side from the constraint glyphs.
-            u = (ea->x0 + ea->x1) / 2 + dy / len * 20 * upp;
-            v = (ea->y0 + ea->y1) / 2 - dx / len * 20 * upp;
-          }
-          break;
-        case K::Diameter:
-        case K::Radius:
-          if (!ea) continue;
-          if (ea->kind == EK::Arc) {
-            const double a0 = std::atan2(ea->y1 - ea->y0, ea->x1 - ea->x0);
-            const double a1 = std::atan2(ea->y2 - ea->y0, ea->x2 - ea->x0);
-            const double mid = a0 + norm2pi(a1 - a0) / 2;
-            u = ea->x0 + (ea->radius + 22 * upp) * std::cos(mid);
-            v = ea->y0 + (ea->radius + 22 * upp) * std::sin(mid);
-          } else {
-            u = ea->x0 + (ea->radius + 26 * upp) * std::cos(-kPi / 4);
-            v = ea->y0 + (ea->radius + 26 * upp) * std::sin(-kPi / 4);
-          }
-          break;
-        case K::MajorRadius:
-        case K::MinorRadius: {
-          if (!ea) continue;
-          // Along the axis the radius measures, just outside the curve.
-          const double mx = ea->x1 - ea->x0, my = ea->y1 - ea->y0, a = std::max(std::hypot(mx, my), 1e-12);
-          const double ux = mx / a, uy = my / a;
-          if (c.kind == K::MajorRadius) {
-            u = ea->x0 + ux * (a / 2) - uy * 12 * upp, v = ea->y0 + uy * (a / 2) + ux * 12 * upp;
-          } else {
-            u = ea->x0 - uy * (ea->minor / 2) + ux * 12 * upp, v = ea->y0 + ux * (ea->minor / 2) + uy * 12 * upp;
-          }
-          break;
-        }
-        case K::PointCircleDistance:
-        case K::CircleDistance:
-        case K::LineCircleDistance:
-        case K::LineDistance: {
-          if (!ea || !eb) continue;
-          // Halfway between the two, a little off the joining line.
-          double x0 = ea->x0, y0 = ea->y0;
-          if (c.kind == K::LineCircleDistance || c.kind == K::LineDistance) {
-            double t;
-            segmentDistance(eb->x0, eb->y0, ea->x0, ea->y0, ea->x1, ea->y1, &t);
-            x0 = ea->x0 + t * (ea->x1 - ea->x0), y0 = ea->y0 + t * (ea->y1 - ea->y0);
-          }
-          u = (x0 + eb->x0) / 2 + 10 * upp, v = (y0 + eb->y0) / 2 + 10 * upp;
-          break;
-        }
-        case K::PointLineDistance: {
-          if (!ea || !eb) continue;
-          double fx, fy, t;
-          segmentDistance(ea->x0, ea->y0, eb->x0, eb->y0, eb->x1, eb->y1, &t);
-          // Foot on the infinite line.
-          const double dx = eb->x1 - eb->x0, dy = eb->y1 - eb->y0, len2 = std::max(dx * dx + dy * dy, 1e-12);
-          t = ((ea->x0 - eb->x0) * dx + (ea->y0 - eb->y0) * dy) / len2;
-          fx = eb->x0 + t * dx, fy = eb->y0 + t * dy;
-          u = (ea->x0 + fx) / 2, v = (ea->y0 + fy) / 2;
-          break;
-        }
-        case K::Angle: {
-          if (!ea || !eb) continue;
-          const double x1 = ea->x0, y1 = ea->y0, dx1 = ea->x1 - ea->x0, dy1 = ea->y1 - ea->y0;
-          const double x2 = eb->x0, y2 = eb->y0, dx2 = eb->x1 - eb->x0, dy2 = eb->y1 - eb->y0;
-          const double den = dx1 * dy2 - dy1 * dx2;
-          if (std::abs(den) > 1e-12) {
-            const double s = ((x2 - x1) * dy2 - (y2 - y1) * dx2) / den;
-            const double ix = x1 + s * dx1, iy = y1 + s * dy1;
-            const double mx = ((ea->x0 + ea->x1) / 2 + (eb->x0 + eb->x1) / 2) / 2;
-            const double my = ((ea->y0 + ea->y1) / 2 + (eb->y0 + eb->y1) / 2) / 2;
-            const double l = std::max(dist(ix, iy, mx, my), 1e-12);
-            u = ix + (mx - ix) / l * 40 * upp, v = iy + (my - iy) / l * 40 * upp;
-          } else {
-            u = (ea->x0 + eb->x0) / 2, v = (ea->y0 + eb->y0) / 2;
-          }
-          break;
-        }
-        default: {
-          double x0 = 0, y0 = 0, x1 = 0, y1 = 0;
-          pointPos(ea, x0, y0);
-          pointPos(eb, x1, y1);
-          const double dx = x1 - x0, dy = y1 - y0, len = std::max(std::hypot(dx, dy), 1e-12);
-          u = (x0 + x1) / 2 - dy / len * 14 * upp, v = (y0 + y1) / 2 + dx / len * 14 * upp;
-          break;
-        }
-      }
-      addLabel(u, v, dimensionText(c), color, 15.0, c.id, true);
+    const QColor color = sel ? pal.accent : c.conflicting ? pal.danger : c.driven ? pal.textMuted : pal.text;
+    const double offset[2] = {c.label_x, c.label_y};
+    DimShape shape;
+    if (!dimShape(c.kind, refOf(c.a), refOf(c.b), upp, c.has_label ? offset : nullptr, nullptr, shape, c.value))
       continue;
-    }
-    const QString g = glyph(c.kind);
-    if (g.isEmpty() || !showTags) continue;
-    const QColor color = sel ? pal.accent : c.conflicting ? pal.danger : pal.text;
-    std::vector<std::uint64_t> on;
-    if (c.kind == K::Symmetric) on = {c.c};
-    else if (c.kind == K::Midpoint) on = {c.a};
-    else if (c.kind == K::HorizontalPoints || c.kind == K::VerticalPoints) on = {c.a};
-    else on = {c.a, c.b};
-    for (std::uint64_t id : on) {
-      if (!id) continue;
-      // One tag of a kind per curve: a hexagon's five Equals show once on each side.
-      if (!tagged.insert({id, int(c.kind)}).second) continue;
-      double u, v;
-      if (glyphSpot(id, g, u, v)) addLabel(u, v, g, color, 12.0, c.id, false);
+    addDimensionGraphics(o, gp, shape, color);
+    const QString text = dimensionText(c);
+    addLabel(shape.lu, shape.lv, text, color, 15.0, c.id, true);
+    taken.push_back(boxAt(shape.lu, shape.lv, text, true));
+  }
+
+  // Constraint tags. Some say nothing a dimension or another tag doesn't:
+  // an offset's parallel/concentric (its gap dimension shows the link), the
+  // line side of a tangent, a repeated tag of the same kind on one curve.
+  if (showTags) {
+    std::set<std::pair<std::uint64_t, std::uint64_t>> gapped;
+    for (const auto& c : constraints_)
+      if (c.kind == K::LineDistance || c.kind == K::CircleDistance || c.kind == K::LineCircleDistance)
+        gapped.insert({std::min(c.a, c.b), std::max(c.a, c.b)});
+    auto round = [this](std::uint64_t id) {
+      const auto* e = entity(id);
+      return e && e->kind != EK::Line && e->kind != EK::Point;
+    };
+    std::set<std::pair<std::uint64_t, int>> tagged;
+    for (const auto& c : constraints_) {
+      if (c.is_dimension) continue;
+      const QString g = glyph(c.kind);
+      if (g.isEmpty()) continue;
+      if ((c.kind == K::Parallel || c.kind == K::Concentric) && gapped.count({std::min(c.a, c.b), std::max(c.a, c.b)}))
+        continue;
+      const bool sel = selectedCon_.contains(c.id);
+      const QColor color = sel ? pal.accent : c.conflicting ? pal.danger : pal.text;
+      std::vector<std::uint64_t> on;
+      if (c.kind == K::Symmetric) on = {c.c};
+      else if (c.kind == K::Midpoint || c.kind == K::HorizontalPoints || c.kind == K::VerticalPoints) on = {c.a};
+      else if (c.kind == K::Tangent) on = {round(c.b) || !round(c.a) ? c.b : c.a};
+      else if (c.kind == K::Concentric) on = {c.b};
+      else on = {c.a, c.b};
+      for (std::uint64_t id : on) {
+        if (!id) continue;
+        // One tag of a kind per curve: a hexagon's five Equals show once on each side.
+        if (!tagged.insert({id, int(c.kind)}).second) continue;
+        double u = 0, v = 0;
+        bool ok = false;
+        for (int attempt = 0; attempt < 6; ++attempt) {
+          if (!glyphSpot(id, g, u, v)) break;
+          ok = true;
+          if (isFree(boxAt(u, v, g, false))) break;
+        }
+        if (!ok) continue;
+        addLabel(u, v, g, color, 11.0, c.id, false);
+        taken.push_back(boxAt(u, v, g, false));
+      }
     }
   }
 
@@ -2109,5 +2426,153 @@ void SketchEditor::drawPreview() {
     if (sizeBoxCount() > 0) showSizeBoxes(live, cursor_);
   }
   if (!drawing) previewModify(o, cu, cv);
+  if (mode_ == Mode::Dimension && placing_) {
+    auto ref = [this](const Hit& h) {
+      DimRef r;
+      r.e = entity(h.id);
+      r.u = h.u, r.v = h.v;
+      return r;
+    };
+    double lu, lv;
+    if (toPlane(cursor_, lu, lv)) {
+      const double at[2] = {lu, lv};
+      DimShape shape;
+      if (dimShape(pending_.kind, ref(pending_.a), ref(pending_.b), upp, nullptr, at, shape,
+                   measure(pending_.kind, pending_.a, pending_.b))) {
+        addDimensionGraphics(o, gp, shape, pal.accent);
+        const double v = measure(pending_.kind, pending_.a, pending_.b);
+        const QString text = pending_.angle ? QString::number(v * 180.0 / kPi, 'g', 4) + QStringLiteral("°")
+                                            : fmt(v);
+        o.labels.push_back({world(lu, lv), text, pal.accent, 15.0, pal.panel});
+      }
+    }
+  }
   view_->setOverlay("sketch-preview", o);
+}
+
+// ---- Box selection ------------------------------------------------------------------
+
+// The curve as a screen-space polyline (one point for a point).
+std::vector<QPointF> SketchEditor::screenPolyline(const model::SketchEntityInfo& e) const {
+  std::vector<QPointF> out;
+  auto add = [&](double u, double v) { out.push_back(view_->project(world(u, v))); };
+  switch (e.kind) {
+    case EK::Point: add(e.x0, e.y0); break;
+    case EK::Line: add(e.x0, e.y0), add(e.x1, e.y1); break;
+    case EK::Circle:
+      for (int k = 0; k <= 48; ++k) add(e.x0 + e.radius * std::cos(2 * kPi * k / 48), e.y0 + e.radius * std::sin(2 * kPi * k / 48));
+      break;
+    case EK::Arc: {
+      const double a0 = std::atan2(e.y1 - e.y0, e.x1 - e.x0);
+      const double sweep = norm2pi(std::atan2(e.y2 - e.y0, e.x2 - e.x0) - a0);
+      for (int k = 0; k <= 32; ++k) {
+        const double a = a0 + sweep * k / 32;
+        add(e.x0 + e.radius * std::cos(a), e.y0 + e.radius * std::sin(a));
+      }
+      break;
+    }
+    default:
+      for (std::size_t i = 0; i + 1 < e.samples.size(); i += 2) add(e.samples[i], e.samples[i + 1]);
+      break;
+  }
+  return out;
+}
+
+void SketchEditor::drawBox() {
+  const theme::Palette& pal = theme::current();
+  const QRectF r = QRectF(boxStart_, cursor_).normalized();
+  const bool crossing = cursor_.x() < boxStart_.x();
+  std::vector<geom::Point2> corners;
+  for (const QPointF& c : {r.topLeft(), r.topRight(), r.bottomRight(), r.bottomLeft()}) {
+    double u, v;
+    if (!toPlane(c, u, v)) return;
+    corners.push_back({u, v});
+  }
+  const geom::Plane gp = geomPlane(plane_);
+  std::vector<geom::Seg2> edges;
+  for (int i = 0; i < 4; ++i) {
+    geom::Seg2 s;
+    s.x0 = corners[i][0], s.y0 = corners[i][1], s.x1 = corners[(i + 1) % 4][0], s.y1 = corners[(i + 1) % 4][1];
+    edges.push_back(s);
+  }
+  Overlay o;
+  // Window boxes are solid, crossing boxes dashed and green, as in Fusion.
+  const QColor c = crossing ? pal.success : pal.highlight;
+  o.faces.push_back({geom::makePolygonFace(gp, {corners}), c, 0.88});
+  o.curves.push_back({geom::makeCurves(gp, edges), c, 1.2, crossing});
+  view_->setOverlay("sketch-box", o);
+}
+
+void SketchEditor::finishBox(const QPointF& end) {
+  const QRectF r = QRectF(boxStart_, end).normalized();
+  const bool crossing = end.x() < boxStart_.x();
+  auto segHits = [&](QPointF a, QPointF b) {
+    if (r.contains(a) || r.contains(b)) return true;
+    const QLineF seg(a, b);
+    const QLineF sides[4] = {{r.topLeft(), r.topRight()}, {r.topRight(), r.bottomRight()},
+                             {r.bottomRight(), r.bottomLeft()}, {r.bottomLeft(), r.topLeft()}};
+    for (const QLineF& side : sides)
+      if (seg.intersects(side, nullptr) == QLineF::BoundedIntersection) return true;
+    return false;
+  };
+  std::vector<std::uint64_t> picked;
+  for (const auto& e : entities_) {
+    if (e.kind == EK::Point && !showPoints_) continue;
+    const std::vector<QPointF> pl = screenPolyline(e);
+    if (pl.empty()) continue;
+    bool take;
+    if (crossing) {
+      take = pl.size() == 1 ? r.contains(pl[0]) : false;
+      for (std::size_t i = 0; i + 1 < pl.size() && !take; ++i) take = segHits(pl[i], pl[i + 1]);
+    } else {
+      take = std::all_of(pl.begin(), pl.end(), [&](const QPointF& p) { return r.contains(p); });
+    }
+    if (take) picked.push_back(e.id);
+  }
+  if (picksCurves(mode_) && opStage_ == 0) {
+    for (std::uint64_t id : picked)
+      if (isCurve(id) && std::find(opCurves_.begin(), opCurves_.end(), id) == opCurves_.end()) opCurves_.push_back(id);
+    emit message(tr("%n curve(s) picked. Enter to go on, Esc to start over.", nullptr, int(opCurves_.size())));
+    drawHover();
+    return;
+  }
+  if (!boxAdd_) selected_.clear(), selectedCon_.clear();
+  for (std::uint64_t id : picked) selected_.insert(id);
+  // Dimensions and tags whose label sits in the box.
+  for (const LabelSpot& l : labels_)
+    if (r.contains(l.screen)) selectedCon_.insert(l.constraint);
+  redraw();
+  emit message(tr("%n item(s) selected.", nullptr, int(selected_.size() + selectedCon_.size())));
+}
+
+// ---- Dimension labels ------------------------------------------------------------
+
+// Stores a label spot as an offset from the dimension's anchor, so it moves
+// with the geometry.
+void SketchEditor::storeLabel(std::uint64_t constraint, double lu, double lv) {
+  for (auto& c : constraints_) {
+    if (c.id != constraint || !c.is_dimension) continue;
+    DimRef a, b;
+    a.e = entity(c.a);
+    b.e = entity(c.b);
+    const double at[2] = {lu, lv};
+    DimShape shape;
+    if (!dimShape(c.kind, a, b, unitsPerPixel(), nullptr, at, shape, c.value)) return;
+    try {
+      model::sketch_set_label(tl(), sketch_, c.id, lu - shape.au, lv - shape.av);
+    } catch (const std::exception&) {
+      return;
+    }
+    c.has_label = true;
+    c.label_x = lu - shape.au;
+    c.label_y = lv - shape.av;
+    return;
+  }
+}
+
+void SketchEditor::dragLabel(const QPointF& pos) {
+  double u, v;
+  if (!toPlane(pos, u, v)) return;
+  storeLabel(labelDrag_, u, v);
+  redraw();
 }

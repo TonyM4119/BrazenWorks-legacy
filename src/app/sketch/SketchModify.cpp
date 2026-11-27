@@ -6,6 +6,7 @@
 #include "SketchEditor.h"
 
 #include "Settings.h"
+#include "Icons.h"
 #include "Theme.h"
 #include "widgets/CommandDialog.h"
 #include "widgets/LengthField.h"
@@ -15,7 +16,9 @@
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
 
+#include <QCursor>
 #include <QDoubleSpinBox>
+#include <QMenu>
 
 #include <algorithm>
 #include <cmath>
@@ -235,8 +238,18 @@ void SketchEditor::clickModify(const Hit& h, const QPointF& pos, Qt::KeyboardMod
       }
       std::vector<std::uint64_t> curves = opCurves_;
       curves.erase(std::remove(curves.begin(), curves.end(), h.id), curves.end());
+      const std::uint64_t group = editMirror_;
+      editMirror_ = 0;
       edit([&] {
-        model::sketch_mirror(tl(), sketch_, toVec(curves), h.id);
+        if (group) {
+          model::CopyGroupInfo g = model::sketch_group_of(tl(), sketch_, curves.front());
+          g.id = group;
+          g.kind = 2;
+          g.axis = h.id;
+          model::sketch_edit_group(tl(), sketch_, g);
+        } else {
+          model::sketch_mirror(tl(), sketch_, toVec(curves), h.id);
+        }
         return true;
       });
       resetDraft();
@@ -375,7 +388,21 @@ void SketchEditor::previewModify(Overlay& o, double cu, double cv) {
 
 // ---- Patterns -------------------------------------------------------------------
 
-void SketchEditor::openPatternDialog(bool circular) {
+void SketchEditor::openPatternDialog(bool circular, std::uint64_t editGroup) {
+  model::CopyGroupInfo group{};
+  if (editGroup) {
+    // Editing: the dialog starts from the pattern's values.
+    for (const auto& e : entities_) {
+      const model::CopyGroupInfo g = model::sketch_group_of(tl(), sketch_, e.id);
+      if (g.id == editGroup) {
+        group = g;
+        break;
+      }
+    }
+    if (!group.id) return;
+    opCurves_.assign(group.sources.begin(), group.sources.end());
+    circular = group.kind == 1;
+  }
   const std::vector<std::uint64_t> curves = opCurves_;
   // Default spacing: a little more than the picked curves are wide.
   double x0 = 1e300, x1 = -1e300, y0 = 1e300, y1 = -1e300;
@@ -393,16 +420,25 @@ void SketchEditor::openPatternDialog(bool circular) {
   }
   const double w = x1 > x0 ? x1 - x0 : 10.0, hgt = y1 > y0 ? y1 - y0 : 10.0;
 
-  auto* d = new CommandDialog(circular ? tr("Circular Pattern") : tr("Rectangular Pattern"), view_);
+  const QString title = circular ? tr("Circular Pattern") : tr("Rectangular Pattern");
+  auto* d = new CommandDialog(editGroup ? tr("Edit %1").arg(title) : title, view_);
   d->addInfo(tr("Objects"), tr("%n curve(s)", nullptr, int(curves.size())));
   if (circular) {
-    QDoubleSpinBox* count = d->addNumber(tr("Quantity"), 6, QString(), 2, 360, 0);
-    QDoubleSpinBox* angle = d->addNumber(tr("Angle"), 360, QStringLiteral("°"), 1, 360, 1);
-    const double cx = opAnchor_.u, cy = opAnchor_.v;
+    QDoubleSpinBox* count = d->addNumber(tr("Quantity"), editGroup ? double(group.n1) : 6.0, QString(), 2, 360, 0);
+    QDoubleSpinBox* angle =
+        d->addNumber(tr("Angle"), editGroup ? group.c * 180.0 / kPi : 360.0, QStringLiteral("°"), 1, 360, 1);
+    const double cx = editGroup ? group.a : opAnchor_.u, cy = editGroup ? group.b : opAnchor_.v;
     connect(d, &CommandDialog::accepted, this, [=, this] {
       edit([&] {
-        model::sketch_pattern_circ(tl(), sketch_, toVec(curves), cx, cy, std::size_t(count->value()),
-                                   angle->value() * kPi / 180.0);
+        if (editGroup) {
+          model::CopyGroupInfo g = group;
+          g.n1 = std::size_t(count->value());
+          g.c = angle->value() * kPi / 180.0;
+          model::sketch_edit_group(tl(), sketch_, g);
+        } else {
+          model::sketch_pattern_circ(tl(), sketch_, toVec(curves), cx, cy, std::size_t(count->value()),
+                                     angle->value() * kPi / 180.0);
+        }
         return true;
       });
       resetDraft();
@@ -412,17 +448,26 @@ void SketchEditor::openPatternDialog(bool circular) {
       emit d->rejected();  // closes it
     });
   } else {
-    QDoubleSpinBox* cols = d->addNumber(tr("Columns"), 3, QString(), 1, 200, 0);
-    QDoubleSpinBox* rows = d->addNumber(tr("Rows"), 1, QString(), 1, 200, 0);
-    LengthField* sx = d->addLength(tr("Column spacing"), w * 1.25, unit(), 1e-6);
-    LengthField* sy = d->addLength(tr("Row spacing"), hgt * 1.25, unit(), 1e-6);
-    QDoubleSpinBox* dir = d->addNumber(tr("Direction"), 0, QStringLiteral("°"), -360, 360, 1);
+    QDoubleSpinBox* cols = d->addNumber(tr("Columns"), editGroup ? double(group.n1) : 3.0, QString(), 1, 200, 0);
+    QDoubleSpinBox* rows = d->addNumber(tr("Rows"), editGroup ? double(group.n2) : 1.0, QString(), 1, 200, 0);
+    LengthField* sx = d->addLength(tr("Column spacing"), editGroup ? group.c : w * 1.25, unit(), 1e-6);
+    LengthField* sy = d->addLength(tr("Row spacing"), editGroup ? group.d : hgt * 1.25, unit(), 1e-6);
+    QDoubleSpinBox* dir = d->addNumber(tr("Direction"), editGroup ? std::atan2(group.b, group.a) * 180.0 / kPi : 0.0,
+                                       QStringLiteral("°"), -360, 360, 1);
     connect(d, &CommandDialog::accepted, this, [=, this] {
       const double a = dir->value() * kPi / 180.0;
       edit([&] {
-        model::sketch_pattern_rect(tl(), sketch_, toVec(curves), std::cos(a), std::sin(a),
-                                   std::size_t(cols->value()), std::size_t(rows->value()), sx->valueMm(),
-                                   sy->valueMm());
+        if (editGroup) {
+          model::CopyGroupInfo g = group;
+          g.a = std::cos(a), g.b = std::sin(a);
+          g.n1 = std::size_t(cols->value()), g.n2 = std::size_t(rows->value());
+          g.c = sx->valueMm(), g.d = sy->valueMm();
+          model::sketch_edit_group(tl(), sketch_, g);
+        } else {
+          model::sketch_pattern_rect(tl(), sketch_, toVec(curves), std::cos(a), std::sin(a),
+                                     std::size_t(cols->value()), std::size_t(rows->value()), sx->valueMm(),
+                                     sy->valueMm());
+        }
         return true;
       });
       resetDraft();
@@ -537,4 +582,116 @@ void SketchEditor::autoConstrain() {
   });
   emit message(added ? tr("Auto Constrain added %n constraint(s).", nullptr, int(added))
                      : tr("Auto Constrain found nothing to add."));
+}
+
+// ---- Curve menu, clipboard ---------------------------------------------------------
+
+void SketchEditor::showCurveMenu(std::uint64_t curve, const QPointF& pos) {
+  if (!selected_.contains(curve)) {
+    selected_ = {curve};
+    selectedCon_.clear();
+    redraw();
+  }
+  model::CopyGroupInfo group{};
+  try {
+    group = model::sketch_group_of(tl(), sketch_, curve);
+  } catch (const std::exception&) {
+  }
+  QMenu menu(view_);
+  QAction* editGroup = nullptr;
+  QAction* removeCopies = nullptr;
+  QAction* unlink = nullptr;
+  if (group.id) {
+    const QString what = group.kind == 0 ? tr("Rectangular Pattern")
+                         : group.kind == 1 ? tr("Circular Pattern")
+                                           : tr("Mirror");
+    editGroup = menu.addAction(icons::get(group.kind == 0 ? "patternr" : group.kind == 1 ? "patternc" : "mirror", 16),
+                               tr("Edit %1…").arg(what));
+    removeCopies = menu.addAction(tr("Remove %1 Copies").arg(what));
+    unlink = menu.addAction(tr("Keep Copies, Forget %1").arg(what));
+    menu.addSeparator();
+  }
+  QAction* copy = menu.addAction(tr("Copy\tCtrl+C"));
+  QAction* cut = menu.addAction(tr("Cut\tCtrl+X"));
+  QAction* pasteAct = menu.addAction(tr("Paste\tCtrl+V"));
+  pasteAct->setEnabled(!model::sketch_clipboard_centre().empty());
+  menu.addSeparator();
+  QAction* construction = menu.addAction(icons::get("construction", 16), tr("Normal / Construction\tX"));
+  QAction* remove = menu.addAction(icons::get("close", 16), tr("Delete\tDel"));
+  QAction* chosen = menu.exec(view_->mapToGlobal(pos.toPoint()));
+  if (!chosen) return;
+  if (chosen == editGroup) {
+    selected_.clear();  // else the tool would take the selection as a new pick
+    if (group.kind == 2) {
+      setMode(Mode::Mirror);
+      opCurves_.assign(group.sources.begin(), group.sources.end());
+      opStage_ = 1;
+      editMirror_ = group.id;
+      drawHover();
+      emit message(tr("Click the new mirror line."));
+    } else {
+      setMode(group.kind == 1 ? Mode::PatternCirc : Mode::PatternRect);
+      openPatternDialog(group.kind == 1, group.id);
+    }
+  } else if (chosen == removeCopies || chosen == unlink) {
+    const bool del = chosen == removeCopies;
+    edit([&] {
+      model::sketch_delete_group(tl(), sketch_, group.id, del);
+      return true;
+    });
+  } else if (chosen == copy) {
+    copySelection();
+  } else if (chosen == cut) {
+    cutSelection();
+  } else if (chosen == pasteAct) {
+    paste();
+  } else if (chosen == construction) {
+    toggleConstruction();
+  } else if (chosen == remove) {
+    deleteSelection();
+  }
+}
+
+void SketchEditor::copySelection() {
+  std::vector<std::uint64_t> curves;
+  for (std::uint64_t id : selected_)
+    if (isCurve(id)) curves.push_back(id);
+  if (curves.empty()) {
+    emit message(tr("Select curves to copy first."));
+    return;
+  }
+  try {
+    const std::size_t n = model::sketch_copy(tl(), sketch_, toVec(curves));
+    emit message(tr("Copied %n curve(s). Ctrl+V pastes them at the cursor, in this or another sketch.", nullptr,
+                    int(n)));
+  } catch (const std::exception& ex) {
+    emit message(QString::fromUtf8(ex.what()));
+  }
+}
+
+void SketchEditor::cutSelection() {
+  copySelection();
+  if (!model::sketch_clipboard_centre().empty()) deleteSelection();
+}
+
+void SketchEditor::paste() {
+  const rust::Vec<double> centre = model::sketch_clipboard_centre();
+  if (centre.size() < 2) {
+    emit message(tr("Nothing has been copied yet."));
+    return;
+  }
+  // Centred on the cursor when it is over the view; else a little offset.
+  double u = centre[0] + 5, v = centre[1] - 5;
+  const QPointF at = view_->mapFromGlobal(QCursor::pos());
+  if (view_->rect().contains(at.toPoint())) toPlane(at, u, v);
+  std::vector<std::uint64_t> made;
+  setMode(Mode::Select);
+  edit([&] {
+    for (std::uint64_t id : model::sketch_paste(tl(), sketch_, u - centre[0], v - centre[1])) made.push_back(id);
+    return !made.empty();
+  });
+  selected_.clear();
+  for (std::uint64_t id : made) selected_.insert(id);
+  redraw();
+  emit message(tr("Pasted %n curve(s). Drag them, or use Move to place them exactly.", nullptr, int(made.size())));
 }

@@ -110,13 +110,14 @@ millimeters, so switching units never changes the geometry.
    ellipse, slot and fit-point spline (double-click or **Enter** ends it; click the first
    point to close it). Clicks also snap to line midpoints, line extensions and alignment
    with other points (dashed guides).
-3. **D** dimensions: click a curve then empty space (line length, circle diameter, arc
-   radius, ellipse major/minor radius), or two things: points (distance), a point and a
+3. **D** dimensions: click a curve then where the dimension goes (line length, circle
+   diameter, arc radius, ellipse major/minor radius), or two things, then where it goes: points (distance), a point and a
    line, two lines (angle, or the gap when parallel), or a line, point or circle and a
    circle (the gap). Type a value in any unit (`2 1/4`, `30mm`) and press **Enter**.
    Double-click a dimension to change it. The first dimension scales the whole sketch.
    A dimension the sketch already implies can be added as a **driven** one, shown in
-   brackets; right-click a dimension to switch it between driven and driving.
+   brackets; right-click a dimension to switch it between driven and driving. Drag a
+   dimension's label to move it.
 4. Constraints: pick a tool in **CONSTRAINTS**, then the geometry (or select first, then
    the tool). Refused constraints say why. **Auto Constrain** adds what the drawing
    already shows (joined ends, level lines, tangent arcs).
@@ -129,7 +130,12 @@ millimeters, so switching units never changes the geometry.
 6. Colours: **blue** can still move, **white** is fully constrained, **red** conflicts;
    dashed is construction (**X**). Red dots mark open ends that keep a profile from
    closing. The status bar shows the degrees of freedom left.
-7. **S** / Esc returns to select: click to select, drag points or lines, **Delete**.
+7. **S** / Esc returns to select: click to select, drag points or lines, **Delete**. Drag
+   a box in empty space: left to right selects what's inside, right to left what it
+   touches. **Ctrl+C** / **Ctrl+X** / **Ctrl+V** copy, cut and paste curves (with their
+   constraints) at the cursor, in the same or another sketch. Right-click a curve for more;
+   on a pattern or mirror copy that includes **Edit Pattern…** / **Edit Mirror…** and
+   removing the copies.
 8. **Finish Sketch**, then **Extrude**: click profiles (they light up), set the distance,
    direction and Join/Cut/New Body; the result previews live.
 

@@ -6,8 +6,8 @@ pub mod profiles;
 pub mod solver_adapter;
 
 pub use model::{
-    ConstraintId, Entity, EntityId, Geometry, Sketch, SketchConstraint, SketchError, SolveSummary,
-    Transform,
+    ConstraintId, CopyGroup, CopyKind, Entity, EntityId, Geometry, Sketch, SketchConstraint,
+    SketchError, SolveSummary, Transform,
 };
 pub use plane::{OriginPlane, SketchPlane};
 pub use profiles::{find_region, find_regions, Loop, Region, RegionKey, Segment};

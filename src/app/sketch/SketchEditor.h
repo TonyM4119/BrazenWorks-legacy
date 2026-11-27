@@ -70,6 +70,10 @@ class SketchEditor : public QObject, public ViewportTool {
   // Adds the constraints the geometry already shows (coincident ends,
   // horizontal/vertical lines…).
   void autoConstrain();
+  // Clipboard (shared between sketches): Ctrl+C, Ctrl+X, Ctrl+V.
+  void copySelection();
+  void cutSelection();
+  void paste();
 
   // ViewportTool
   bool mousePress(QMouseEvent* e) override;
@@ -159,7 +163,9 @@ class SketchEditor : public QObject, public ViewportTool {
   std::vector<std::uint64_t> cornerLines(std::uint64_t point) const;
   int edgeAt(const QPointF& pos) const;
   void projectEdge(int index);
-  void openPatternDialog(bool circular);
+  void openPatternDialog(bool circular, std::uint64_t editGroup = 0);
+  void showCurveMenu(std::uint64_t curve, const QPointF& pos);
+  std::uint64_t editMirror_ = 0;  // Mirror tool re-picking the axis of this group
   void showDimensionMenu(std::uint64_t constraint, const QPointF& pos);
   bool applyResult(const model::ConstraintResult& r, model::ConstraintKind kind, std::uint64_t a, std::uint64_t b,
                    std::uint64_t c);
@@ -170,7 +176,14 @@ class SketchEditor : public QObject, public ViewportTool {
     model::ConstraintKind kind = model::ConstraintKind::Length;
     Hit a, b;
     bool angle = false;
+    bool placed = false;  // the label goes at (lu, lv)
+    double lu = 0, lv = 0;
   };
+  bool placing_ = false;          // a new dimension follows the cursor until a click places it
+  std::uint64_t labelDrag_ = 0;   // dimension whose label is being dragged
+  bool labelMoved_ = false;
+  void dragLabel(const QPointF& pos);
+  void storeLabel(std::uint64_t constraint, double lu, double lv);
   void openValueEditor(const PendingDimension& d, const QPointF& pos, double currentValue);
   // A value box that runs a tool step (fillet radius, rotate angle…) instead
   // of setting a dimension.
@@ -248,4 +261,13 @@ class SketchEditor : public QObject, public ViewportTool {
   std::vector<TopoDS_Shape> bodyEdges_;
   int hoverEdge_ = -1;
   int polygonSides_ = 6;
+
+  // Box selection: left to right takes what is inside, right to left what
+  // the box touches (as Fusion does).
+  bool boxing_ = false;
+  QPointF boxStart_;
+  bool boxAdd_ = false;
+  std::vector<QPointF> screenPolyline(const model::SketchEntityInfo& e) const;
+  void drawBox();
+  void finishBox(const QPointF& end);
 };

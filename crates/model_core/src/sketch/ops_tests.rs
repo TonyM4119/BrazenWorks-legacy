@@ -282,3 +282,101 @@ fn copies_keep_their_shape() {
     s.pattern_rect(&lines, [1.0, 0.0], 3, 1, 15.0, 0.0).unwrap();
     assert_eq!(s.solve().dof, before + 8);
 }
+
+#[test]
+fn patterns_can_be_edited_and_removed() {
+    let mut s = sketch();
+    let c = s.add_circle_xy([0.0, 0.0], 1.0).unwrap();
+    let made = s.pattern_rect(&[c], [1.0, 0.0], 3, 1, 5.0, 0.0).unwrap();
+    assert_eq!(made.len(), 2);
+    let group = s.group_of(made[0]).unwrap().clone();
+    assert_eq!(s.group_of(c).unwrap().id, group.id);
+    let edited = s
+        .edit_group(
+            group.id,
+            CopyKind::Rect {
+                dir: [1.0, 0.0],
+                nx: 5,
+                ny: 1,
+                sx: 4.0,
+                sy: 0.0,
+            },
+        )
+        .unwrap();
+    assert_eq!(edited.len(), 4);
+    // The old copies are gone, with their points.
+    assert!(s.entity(made[0]).is_none());
+    let circles = |s: &Sketch| {
+        s.entities()
+            .iter()
+            .filter(|e| matches!(e.geometry, Geometry::Circle { .. }))
+            .count()
+    };
+    let points = |s: &Sketch| {
+        s.entities()
+            .iter()
+            .filter(|e| matches!(e.geometry, Geometry::Point { .. }))
+            .count()
+    };
+    assert_eq!(circles(&s), 5);
+    assert_eq!(points(&s), 5);
+    let last = s.entity(edited[3]).unwrap().geometry.defining_points()[0];
+    assert!(near(s.point(last).unwrap(), [16.0, 0.0]));
+    // Copies follow the original's size.
+    let d = s
+        .add_constraint(SketchConstraint::Diameter {
+            curve: c,
+            value: 2.0,
+        })
+        .unwrap();
+    s.set_dimension(d, 3.0).unwrap();
+    assert!((s.radius(edited[3]).unwrap() - 1.5).abs() < 1e-6);
+    // A circular pattern can't become a rectangular one.
+    assert!(s
+        .edit_group(
+            group.id,
+            CopyKind::Circ {
+                centre: [0.0, 0.0],
+                count: 3,
+                angle: TAU
+            }
+        )
+        .is_err());
+    s.delete_group(group.id, true).unwrap();
+    assert_eq!(circles(&s), 1);
+    assert!(s.group_of(c).is_none());
+}
+
+#[test]
+fn mirrors_can_be_edited() {
+    let mut s = sketch();
+    let axis = s.add_line_xy([0.0, -10.0], [0.0, 10.0]);
+    let other = s.add_line_xy([-10.0, 0.0], [10.0, 0.0]);
+    let c = s.add_circle_xy([5.0, 2.0], 1.0).unwrap();
+    let made = s.mirror(&[c], axis).unwrap();
+    let id = s.group_of(made[0]).unwrap().id;
+    let again = s.edit_group(id, CopyKind::Mirror { axis: other }).unwrap();
+    let centre = s.entity(again[0]).unwrap().geometry.defining_points()[0];
+    assert!(near(s.point(centre).unwrap(), [5.0, -2.0]));
+}
+
+#[test]
+fn copy_and_paste_keep_shape() {
+    let mut s = sketch();
+    let lines = s.add_rectangle([0.0, 0.0], [10.0, 5.0]).unwrap();
+    s.add_constraint(SketchConstraint::Length {
+        line: lines[0],
+        value: 10.0,
+    })
+    .unwrap();
+    let clip = s.extract(&lines);
+    let mut other = sketch();
+    let made = other.paste(&clip, [100.0, 0.0]);
+    assert_eq!(made.len(), 4);
+    // Horizontal/vertical and the length come along: 3 degrees of freedom.
+    assert_eq!(other.solve().dof, 3);
+    let p = other.entity(made[0]).unwrap().geometry.defining_points()[0];
+    assert!(other.point(p).unwrap()[0] >= 100.0 - 1e-9);
+    let hits = s.paste(&clip, [0.0, 20.0]);
+    assert_eq!(hits.len(), 4);
+}

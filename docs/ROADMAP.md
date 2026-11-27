@@ -33,6 +33,10 @@ Small, shippable milestones. Each one should leave the app usable for something.
 - [x] More constraints and dimensions: smooth (G2), parallel-line distance,
       point/line/circle-to-circle gaps, ellipse radii; midpoint, extension and
       alignment snapping
+- [x] Sketch polish: box selection (window and crossing), dimensions with
+      extension lines and arrows placed with a click and dragged later, tidier
+      constraint tags, patterns and mirrors that can be edited or removed, copy
+      and paste between sketches
 - [x] Undo/redo of the whole document (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z)
 
 ## M2: Core modeling

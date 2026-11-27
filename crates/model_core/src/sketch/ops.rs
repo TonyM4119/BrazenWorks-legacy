@@ -1211,6 +1211,30 @@ impl Sketch {
         }
     }
 
+    /// Pattern and mirror copies of circles keep the original's size (their
+    /// points don't hold it).
+    fn link_sizes(&mut self, curves: &[EntityId], made: &[EntityId]) {
+        let originals: Vec<EntityId> = curves
+            .iter()
+            .copied()
+            .filter(|&c| {
+                self.entity(c)
+                    .is_some_and(|e| !matches!(e.geometry, Geometry::Point { .. }))
+            })
+            .collect();
+        if originals.len() != made.len() {
+            return;
+        }
+        for (&orig, &copy) in originals.iter().zip(made) {
+            if matches!(
+                self.entity(orig).map(|e| &e.geometry),
+                Some(Geometry::Circle { .. })
+            ) {
+                self.push_constraint(SketchConstraint::Equal(orig, copy));
+            }
+        }
+    }
+
     fn copy_curves(
         &mut self,
         curves: &[EntityId],
@@ -1311,6 +1335,16 @@ impl Sketch {
         curves: &[EntityId],
         axis: EntityId,
     ) -> Result<Vec<EntityId>, SketchError> {
+        let made = self.mirror_raw(curves, axis)?;
+        self.record_group(CopyKind::Mirror { axis }, curves, &made);
+        Ok(made)
+    }
+
+    fn mirror_raw(
+        &mut self,
+        curves: &[EntityId],
+        axis: EntityId,
+    ) -> Result<Vec<EntityId>, SketchError> {
         let (a, b) = match self.entity(axis).map(|e| e.geometry.clone()) {
             Some(Geometry::Line { start, end }) => (
                 self.point(start).unwrap_or([0.0, 0.0]),
@@ -1343,17 +1377,7 @@ impl Sketch {
             };
             self.push_constraint(c);
         }
-        // A circle's size isn't held by its points: keep the copy the same size.
-        if made.len() == curves.len() {
-            for (&orig, &copy) in curves.iter().zip(&made) {
-                if matches!(
-                    self.entity(orig).map(|e| &e.geometry),
-                    Some(Geometry::Circle { .. })
-                ) {
-                    self.push_constraint(SketchConstraint::Equal(orig, copy));
-                }
-            }
-        }
+        self.link_sizes(&curves, &made);
         self.solve();
         Ok(made)
     }
@@ -1361,6 +1385,30 @@ impl Sketch {
     /// Rectangular pattern: `nx` × `ny` copies (the original included) along
     /// `dir` and its left perpendicular, `sx` and `sy` apart.
     pub fn pattern_rect(
+        &mut self,
+        curves: &[EntityId],
+        dir: P,
+        nx: usize,
+        ny: usize,
+        sx: f64,
+        sy: f64,
+    ) -> Result<Vec<EntityId>, SketchError> {
+        let made = self.pattern_rect_raw(curves, dir, nx, ny, sx, sy)?;
+        self.record_group(
+            CopyKind::Rect {
+                dir,
+                nx,
+                ny,
+                sx,
+                sy,
+            },
+            curves,
+            &made,
+        );
+        Ok(made)
+    }
+
+    fn pattern_rect_raw(
         &mut self,
         curves: &[EntityId],
         dir: P,
@@ -1385,6 +1433,7 @@ impl Sketch {
                 let shift = add(mul(u, sx * i as f64), mul(v, sy * j as f64));
                 let (m, pts) = self.copy_curves(curves, &move |p: P| add(p, shift), false, 1.0);
                 self.copy_constraints(curves, &m, &pts, true, true);
+                self.link_sizes(curves, &m);
                 made.extend(m);
             }
         }
@@ -1395,6 +1444,26 @@ impl Sketch {
     /// Circular pattern: `count` copies (the original included) around
     /// `centre`, spread over `angle` (2π = all the way round).
     pub fn pattern_circ(
+        &mut self,
+        curves: &[EntityId],
+        centre: P,
+        count: usize,
+        angle: f64,
+    ) -> Result<Vec<EntityId>, SketchError> {
+        let made = self.pattern_circ_raw(curves, centre, count, angle)?;
+        self.record_group(
+            CopyKind::Circ {
+                centre,
+                count,
+                angle,
+            },
+            curves,
+            &made,
+        );
+        Ok(made)
+    }
+
+    fn pattern_circ_raw(
         &mut self,
         curves: &[EntityId],
         centre: P,
@@ -1420,10 +1489,250 @@ impl Sketch {
             };
             let (m, pts) = self.copy_curves(curves, &move |p: P| t.apply(p), false, 1.0);
             self.copy_constraints(curves, &m, &pts, false, true);
+            self.link_sizes(curves, &m);
             made.extend(m);
         }
         self.solve();
         Ok(made)
+    }
+
+    // ---- Editable patterns and mirrors -------------------------------------------
+
+    fn record_group(&mut self, kind: CopyKind, sources: &[EntityId], made: &[EntityId]) {
+        if made.is_empty() {
+            return;
+        }
+        let id = self.take_id();
+        let sources = sources
+            .iter()
+            .copied()
+            .filter(|&c| !matches!(kind, CopyKind::Mirror { axis } if axis == c))
+            .collect();
+        self.groups.push(CopyGroup {
+            id,
+            kind,
+            sources,
+            copies: made.to_vec(),
+        });
+    }
+
+    /// The pattern or mirror a curve belongs to (as a source or a copy).
+    pub fn group_of(&self, curve: EntityId) -> Option<&CopyGroup> {
+        self.groups.iter().rev().find(|g| {
+            (g.sources.contains(&curve) || g.copies.contains(&curve))
+                && g.sources.iter().any(|&s| self.entity(s).is_some())
+        })
+    }
+
+    /// Makes a pattern or mirror again with new values: the old copies go,
+    /// new ones take their place. The kind (rectangular, circular, mirror)
+    /// stays.
+    pub fn edit_group(&mut self, id: u64, kind: CopyKind) -> Result<Vec<EntityId>, SketchError> {
+        let i = self
+            .groups
+            .iter()
+            .position(|g| g.id == id)
+            .ok_or_else(|| SketchError::InvalidValue("that pattern no longer exists".into()))?;
+        let group = self.groups[i].clone();
+        if std::mem::discriminant(&group.kind) != std::mem::discriminant(&kind) {
+            return Err(SketchError::InvalidValue(
+                "a pattern can't change its kind".into(),
+            ));
+        }
+        let sources: Vec<EntityId> = group
+            .sources
+            .iter()
+            .copied()
+            .filter(|&s| self.entity(s).is_some())
+            .collect();
+        if sources.is_empty() {
+            return Err(SketchError::InvalidValue(
+                "the pattern's original curves are gone".into(),
+            ));
+        }
+        self.delete_copies(&group.copies);
+        let made = match kind {
+            CopyKind::Rect {
+                dir,
+                nx,
+                ny,
+                sx,
+                sy,
+            } => self.pattern_rect_raw(&sources, dir, nx, ny, sx, sy)?,
+            CopyKind::Circ {
+                centre,
+                count,
+                angle,
+            } => self.pattern_circ_raw(&sources, centre, count, angle)?,
+            CopyKind::Mirror { axis } => self.mirror_raw(&sources, axis)?,
+        };
+        if let Some(g) = self.groups.iter_mut().find(|g| g.id == id) {
+            g.kind = kind;
+            g.sources = sources;
+            g.copies = made.clone();
+        }
+        Ok(made)
+    }
+
+    /// Forgets a pattern; its copies go too when `delete_copies`.
+    pub fn delete_group(&mut self, id: u64, delete_copies: bool) -> Result<(), SketchError> {
+        let i = self
+            .groups
+            .iter()
+            .position(|g| g.id == id)
+            .ok_or_else(|| SketchError::InvalidValue("that pattern no longer exists".into()))?;
+        let group = self.groups.remove(i);
+        if delete_copies {
+            self.delete_copies(&group.copies);
+            self.solve();
+        }
+        Ok(())
+    }
+
+    /// Removes copies with their points and every constraint on them.
+    fn delete_copies(&mut self, copies: &[EntityId]) {
+        let mut points: BTreeSet<EntityId> = BTreeSet::new();
+        for &c in copies {
+            if let Some(e) = self.entity(c) {
+                points.extend(e.geometry.defining_points());
+            }
+        }
+        for &c in copies {
+            if self.entity(c).is_some() {
+                let _ = self.remove_entity(c);
+            }
+        }
+        for p in points {
+            let shared = self
+                .entities
+                .iter()
+                .any(|e| e.geometry.defining_points().contains(&p));
+            if shared || self.entity(p).is_none() {
+                continue;
+            }
+            let driven = &mut self.driven;
+            self.constraints.retain(|(cid, c)| {
+                let keep = !c.entities().contains(&p);
+                if !keep {
+                    driven.remove(cid);
+                }
+                keep
+            });
+            let _ = self.remove_entity(p);
+        }
+    }
+
+    // ---- Copy and paste -----------------------------------------------------------
+
+    /// The curves (with their points and the constraints among them) as a
+    /// sketch of their own, for the clipboard.
+    pub fn extract(&self, curves: &[EntityId]) -> Sketch {
+        let mut out = Sketch::new("clipboard", self.plane);
+        let mut keep: BTreeSet<EntityId> = BTreeSet::new();
+        for &c in curves {
+            if let Some(e) = self.entity(c) {
+                keep.insert(c);
+                keep.extend(e.geometry.defining_points());
+            }
+        }
+        out.entities = self
+            .entities
+            .iter()
+            .filter(|e| keep.contains(&e.id))
+            .cloned()
+            .collect();
+        out.constraints = self
+            .constraints
+            .iter()
+            .filter(|(id, c)| {
+                !self.driven.contains(id)
+                    && !matches!(c, SketchConstraint::Fix(_))
+                    && c.entities().iter().all(|e| keep.contains(e))
+            })
+            .cloned()
+            .collect();
+        out.next_id = self.next_id;
+        out.solve();
+        out
+    }
+
+    /// Adds a clipboard sketch's curves, moved by `offset`. Returns the new
+    /// curves.
+    pub fn paste(&mut self, clip: &Sketch, offset: P) -> Vec<EntityId> {
+        let mut map: HashMap<EntityId, EntityId> = HashMap::new();
+        // Points first, then curves (which refer to them).
+        let mut order: Vec<&Entity> = clip.entities.iter().collect();
+        order.sort_by_key(|e| !matches!(e.geometry, Geometry::Point { .. }));
+        let mut made = Vec::new();
+        for e in order {
+            let id = EntityId(self.take_id());
+            map.insert(e.id, id);
+            let m = |p: &EntityId| map.get(p).copied().unwrap_or(*p);
+            let geometry = match &e.geometry {
+                Geometry::Point { x, y } => Geometry::Point {
+                    x: x + offset[0],
+                    y: y + offset[1],
+                },
+                Geometry::Line { start, end } => Geometry::Line {
+                    start: m(start),
+                    end: m(end),
+                },
+                Geometry::Circle { centre, radius } => Geometry::Circle {
+                    centre: m(centre),
+                    radius: *radius,
+                },
+                Geometry::Arc { centre, start, end } => Geometry::Arc {
+                    centre: m(centre),
+                    start: m(start),
+                    end: m(end),
+                },
+                Geometry::Ellipse {
+                    centre,
+                    major,
+                    minor_radius,
+                } => Geometry::Ellipse {
+                    centre: m(centre),
+                    major: m(major),
+                    minor_radius: *minor_radius,
+                },
+                Geometry::EllipticalArc {
+                    centre,
+                    major,
+                    minor_radius,
+                    start,
+                    end,
+                } => Geometry::EllipticalArc {
+                    centre: m(centre),
+                    major: m(major),
+                    minor_radius: *minor_radius,
+                    start: m(start),
+                    end: m(end),
+                },
+                Geometry::Spline { points, closed } => Geometry::Spline {
+                    points: points.iter().map(m).collect(),
+                    closed: *closed,
+                },
+            };
+            if !matches!(geometry, Geometry::Point { .. }) {
+                made.push(id);
+            }
+            self.entities.push(Entity {
+                id,
+                geometry,
+                construction: e.construction,
+            });
+        }
+        let f = |id: EntityId| map.get(&id).copied();
+        let copies: Vec<SketchConstraint> = clip
+            .constraints
+            .iter()
+            .filter_map(|(_, c)| remap_constraint(c, &f, true, true))
+            .collect();
+        for c in copies {
+            self.push_constraint(c);
+        }
+        self.solve();
+        made
     }
 
     /// Move / rotate / scale curves, or copies of them. Constraints that hold

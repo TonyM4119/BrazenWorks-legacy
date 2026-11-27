@@ -414,6 +414,35 @@ impl SolveSummary {
     }
 }
 
+/// How a group of copies was made, so it can be made again with new values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CopyKind {
+    Rect {
+        dir: [f64; 2],
+        nx: usize,
+        ny: usize,
+        sx: f64,
+        sy: f64,
+    },
+    Circ {
+        centre: [f64; 2],
+        count: usize,
+        angle: f64,
+    },
+    Mirror {
+        axis: EntityId,
+    },
+}
+
+/// A pattern or mirror: the curves it copies and the copies it made.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CopyGroup {
+    pub id: u64,
+    pub kind: CopyKind,
+    pub sources: Vec<EntityId>,
+    pub copies: Vec<EntityId>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sketch {
     pub name: String,
@@ -424,6 +453,10 @@ pub struct Sketch {
     driven: BTreeSet<ConstraintId>,
     /// Splines as last solved, for drawing and profiles.
     splines: BTreeMap<EntityId, SplineData>,
+    /// Where each dimension's label was placed, relative to its anchor.
+    labels: BTreeMap<ConstraintId, [f64; 2]>,
+    /// Patterns and mirrors that can still be edited.
+    groups: Vec<CopyGroup>,
     next_id: u64,
 }
 
@@ -436,6 +469,8 @@ impl Sketch {
             constraints: Vec::new(),
             driven: BTreeSet::new(),
             splines: BTreeMap::new(),
+            labels: BTreeMap::new(),
+            groups: Vec::new(),
             next_id: 1,
         }
     }
@@ -1114,8 +1149,22 @@ impl Sketch {
         Ok(id)
     }
 
+    /// Where a dimension's label sits, relative to its anchor (see the UI).
+    pub fn label(&self, id: ConstraintId) -> Option<[f64; 2]> {
+        self.labels.get(&id).copied()
+    }
+
+    pub fn set_label(&mut self, id: ConstraintId, offset: [f64; 2]) -> Result<(), SketchError> {
+        if !self.constraints.iter().any(|(c, _)| *c == id) {
+            return Err(SketchError::UnknownConstraint(id));
+        }
+        self.labels.insert(id, offset);
+        Ok(())
+    }
+
     pub fn remove_constraint(&mut self, id: ConstraintId) -> Result<(), SketchError> {
         let before = self.constraints.len();
+        self.labels.remove(&id);
         self.constraints.retain(|(c, _)| *c != id);
         if self.constraints.len() == before {
             return Err(SketchError::UnknownConstraint(id));
