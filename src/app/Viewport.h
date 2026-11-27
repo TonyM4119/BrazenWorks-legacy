@@ -20,6 +20,10 @@
 #include <optional>
 #include <vector>
 
+namespace geom {
+struct Plane;
+}
+
 class QKeyEvent;
 
 // Something that takes over left-clicks in the viewport (sketch editor,
@@ -91,6 +95,8 @@ class Viewport : public QOpenGLWidget, public AIS_ViewController {
   void setGridVisible(bool visible);
   // Grid line spacing and half-size, in mm (every tenth line is stronger).
   void setGridSpacing(double stepMm, double extentMm);
+  // The plane the grid lies on (the XY plane by default).
+  void setGridPlane(const geom::Plane& plane);
 
   // Overlay layers, replaced as a whole ("sketch", "preview", "profiles"…).
   void setOverlay(const QString& layer, const Overlay& overlay);

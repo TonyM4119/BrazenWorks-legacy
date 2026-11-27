@@ -8,9 +8,13 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QSettings>
 #include <QStyle>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+#include <algorithm>
+#include <vector>
 
 namespace {
 
@@ -46,17 +50,46 @@ const ConstraintInfo kConstraints[] = {
     {"sketch.c.smooth", "smooth", "Smooth (G2)", K::Smooth},
 };
 
-QLabel* heading(const QString& text, QWidget* parent) {
-  auto* l = new QLabel(text, parent);
-  l->setObjectName("PaletteHeading");
-  return l;
-}
+// Tool buttons that wrap to the palette's width.
+class ToolGrid : public QWidget {
+ public:
+  explicit ToolGrid(QWidget* parent) : QWidget(parent) {
+    QSizePolicy p(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    p.setHeightForWidth(true);
+    setSizePolicy(p);
+  }
+  void add(QToolButton* b) {
+    b->setParent(this);
+    buttons_.push_back(b);
+    relayout();
+    updateGeometry();
+  }
+  bool hasHeightForWidth() const override { return true; }
+  int heightForWidth(int w) const override {
+    const int c = columns(w), n = int(buttons_.size());
+    return n ? ((n + c - 1) / c) * kCell - kGap : 0;
+  }
+  QSize sizeHint() const override { return {6 * kCell - kGap, heightForWidth(6 * kCell - kGap)}; }
+  QSize minimumSizeHint() const override { return {kCell - kGap, kCell - kGap}; }
+
+ protected:
+  void resizeEvent(QResizeEvent*) override { relayout(); }
+
+ private:
+  static constexpr int kCell = 42, kGap = 4;  // 38 px buttons
+  static int columns(int w) { return std::max(1, (w + kGap) / kCell); }
+  void relayout() {
+    const int c = columns(width());
+    for (int i = 0; i < int(buttons_.size()); ++i) buttons_[i]->move((i % c) * kCell, (i / c) * kCell);
+  }
+  std::vector<QToolButton*> buttons_;
+};
 
 }  // namespace
 
 SketchPalette::SketchPalette(SketchEditor* editor, QWidget* parent) : QWidget(parent), editor_(editor) {
   setObjectName("SketchPalette");
-  setFixedWidth(316);
+  setMinimumWidth(220);
   auto* col = new QVBoxLayout(this);
   col->setContentsMargins(12, 8, 12, 12);
   col->setSpacing(8);
@@ -73,7 +106,7 @@ SketchPalette::SketchPalette(SketchEditor* editor, QWidget* parent) : QWidget(pa
   col->addLayout(dofRow);
 
   // Settings.
-  col->addWidget(heading(tr("Settings"), this));
+  QVBoxLayout* settingsBox = section(col, "settings", tr("Settings"));
   construction_ = new QCheckBox(tr("Construction (X)"), this);
   construction_->setToolTip(tr("Draw new lines, circles and arcs as construction geometry"));
   connect(construction_, &QCheckBox::toggled, editor_, &SketchEditor::setConstructionMode);
@@ -93,7 +126,7 @@ SketchPalette::SketchPalette(SketchEditor* editor, QWidget* parent) : QWidget(pa
   settings->addWidget(check(tr("Constraints"), SketchEditor::Display::Constraints), 1, 1);
   settings->addWidget(check(tr("Points"), SketchEditor::Display::Points), 2, 0);
   settings->addWidget(check(tr("Profiles"), SketchEditor::Display::Profiles), 2, 1);
-  col->addLayout(settings);
+  settingsBox->addLayout(settings);
   auto* lookAt = new QPushButton(tr("Look At"), this);
   lookAt->setObjectName("PaletteButton");
   lookAt->setToolTip(tr("Turn the view to face the sketch"));
@@ -101,48 +134,35 @@ SketchPalette::SketchPalette(SketchEditor* editor, QWidget* parent) : QWidget(pa
   auto* lookRow = new QHBoxLayout;
   lookRow->addStretch(1);
   lookRow->addWidget(lookAt);
-  col->addLayout(lookRow);
+  settingsBox->addLayout(lookRow);
 
   // Create.
-  col->addWidget(heading(tr("Create"), this));
-  auto* create = new QGridLayout;
-  create->setSpacing(4);
-  int i = 0;
+  auto* create = new ToolGrid(this);
   for (const char* id : kCreate) {
     const SketchToolDef* t = sketchToolById(id);
-    create->addWidget(toolButton(t->id, t->icon, tr(t->title)), i / 6, i % 6);
-    ++i;
+    create->add(toolButton(t->id, t->icon, tr(t->title)));
   }
-  col->addLayout(create);
+  section(col, "create", tr("Create"))->addWidget(create);
 
   // Modify.
-  col->addWidget(heading(tr("Modify"), this));
-  auto* modify = new QGridLayout;
-  modify->setSpacing(4);
-  i = 0;
+  auto* modify = new ToolGrid(this);
   for (const char* id : kModify) {
     const SketchToolDef* t = sketchToolById(id);
-    modify->addWidget(toolButton(t->id, t->icon, tr(t->title)), i / 6, i % 6);
-    ++i;
+    modify->add(toolButton(t->id, t->icon, tr(t->title)));
   }
-  col->addLayout(modify);
+  section(col, "modify", tr("Modify"))->addWidget(modify);
 
   // Constraints.
-  col->addWidget(heading(tr("Constraints"), this));
-  auto* cons = new QGridLayout;
-  cons->setSpacing(4);
-  i = 0;
-  for (const ConstraintInfo& c : kConstraints) {
-    cons->addWidget(toolButton(c.id, c.icon, tr(c.title)), i / 6, i % 6);
-    ++i;
-  }
+  auto* cons = new ToolGrid(this);
+  for (const ConstraintInfo& c : kConstraints) cons->add(toolButton(c.id, c.icon, tr(c.title)));
+  QVBoxLayout* consBox = section(col, "constraints", tr("Constraints"));
+  consBox->addWidget(cons);
   auto* autoBtn = new QPushButton(icons::get("autoconstrain", 16), tr("Auto Constrain"), this);
   autoBtn->setObjectName("PaletteButton");
   autoBtn->setToolTip(tr("Add the constraints the drawing already shows: joined ends, horizontal and vertical "
                          "lines, tangent arcs"));
   connect(autoBtn, &QPushButton::clicked, this, [this] { emit toolRequested("sketch.autoconstrain"); });
-  cons->addWidget(autoBtn, (i + 5) / 6, 0, 1, 6);
-  col->addLayout(cons);
+  consBox->addWidget(autoBtn);
 
   // The running tool.
   toolTitle_ = new QLabel(this);
@@ -170,6 +190,35 @@ SketchPalette::SketchPalette(SketchEditor* editor, QWidget* parent) : QWidget(pa
   connect(editor_, &SketchEditor::solveStateChanged, this, &SketchPalette::updateSolve);
   connect(editor_, &SketchEditor::modeChanged, this, &SketchPalette::updateMode);
   updateMode();
+}
+
+QVBoxLayout* SketchPalette::section(QVBoxLayout* col, const QString& key, const QString& title) {
+  const QString setting = QStringLiteral("sketchPalette/%1Collapsed").arg(key);
+  auto* head = new QToolButton(this);
+  head->setObjectName("PaletteHeading");
+  head->setText(title);
+  head->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  head->setIconSize(QSize(12, 12));
+  head->setCursor(Qt::PointingHandCursor);
+  head->setToolTip(tr("Click to show or hide"));
+  auto* body = new QWidget(this);
+  auto* box = new QVBoxLayout(body);
+  box->setContentsMargins(0, 0, 0, 0);
+  box->setSpacing(6);
+  auto apply = [head, body](bool collapsed) {
+    body->setVisible(!collapsed);
+    head->setIcon(icons::get(collapsed ? "chevron-right" : "chevron-down", 12));
+  };
+  apply(QSettings().value(setting, false).toBool());
+  connect(head, &QToolButton::clicked, this, [this, body, apply, setting] {
+    const bool collapsed = body->isVisible();
+    apply(collapsed);
+    QSettings().setValue(setting, collapsed);
+    emit contentChanged();
+  });
+  col->addWidget(head, 0, Qt::AlignLeft);
+  col->addWidget(body);
+  return box;
 }
 
 QToolButton* SketchPalette::toolButton(const QString& id, const QString& icon, const QString& tip) {

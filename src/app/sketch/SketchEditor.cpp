@@ -186,11 +186,13 @@ SketchEditor::SketchEditor(Viewport* view, Host host, std::uint64_t sketch, QObj
     drawPreview();
   });
   reload();
+  view_->setGridPlane(geomPlane(plane_));  // the grid lies on the sketch
 }
 
 SketchEditor::~SketchEditor() {
   closeValueEditor();
   clearDisplay();
+  view_->setGridPlane(geom::Plane{});
 }
 
 model::LengthUnitKind SketchEditor::unit() { return model::timeline_units(tl()); }
