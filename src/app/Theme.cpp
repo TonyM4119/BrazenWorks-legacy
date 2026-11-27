@@ -156,6 +156,8 @@ QSpinBox::up-button, QSpinBox::down-button { width: 14px; border: 0; }
 #InfoTable QHeaderView::section { background: {toolbar}; color: {textMuted}; border: 0; padding: 4px 8px; }
 #PaletteScroll, #PaletteScroll > QWidget > QWidget { background: transparent; }
 #PaletteHeading { color: {textMuted}; font-weight: 600; font-size: 11px; padding-top: 4px; }
+QToolButton#PaletteHeading { background: transparent; border: none; padding: 4px 0 0 0; }
+QToolButton#PaletteHeading:hover { color: {text}; }
 #PaletteDof { font-weight: 600; }
 #PaletteDof[state="full"] { color: {success}; }
 #PaletteDof[state="conflict"] { color: {danger}; }

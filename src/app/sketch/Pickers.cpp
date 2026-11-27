@@ -96,7 +96,10 @@ PlanePicker::PlanePicker(Viewport* view, double halfSize, std::function<void(mod
   draw();
 }
 
-PlanePicker::~PlanePicker() { view_->clearOverlay("planes"); }
+PlanePicker::~PlanePicker() {
+  view_->clearOverlay("planes");
+  view_->setGridPlane(geom::Plane{});
+}
 
 int PlanePicker::planeAt(const QPointF& pos) const {
   int best = -1;
@@ -146,6 +149,8 @@ bool PlanePicker::mouseMove(QMouseEvent* e) {
   const int i = planeAt(e->position());
   if (i != hover_) {
     hover_ = i;
+    // The grid shows on the plane under the cursor, as in Fusion.
+    view_->setGridPlane(i >= 0 ? originPlane(i) : geom::Plane{});
     draw();
   }
   return true;
