@@ -41,6 +41,7 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QComboBox>
+#include <QHash>
 #include <QKeySequence>
 #include <QMouseEvent>
 #include <QPainter>
@@ -69,7 +70,7 @@ QVector<Ribbon::Workspace> workspaces() {
   using T = Ribbon::Tool;
   Ribbon::Workspace design{
       "Design",
-      {"SOLID", "SURFACE", "MESH", "SHEET METAL", "PLASTIC", "UTILITIES", "MANAGE"},
+      {"SOLID", "SURFACE", "MESH", "SHEET METAL", "PLASTIC", "MANAGE", "UTILITIES", "AUTOMATION"},
       {
           G{"CREATE",
             {T{"design.sketch", "Create Sketch", "sketch", {}},
@@ -113,61 +114,164 @@ QVector<Ribbon::Workspace> workspaces() {
   return {design, manufacture};
 }
 
-// The contextual SKETCH tab shown while a sketch is open.
+// ---- The contextual SKETCH tab, laid out as Fusion's ----------------------------
+
+Ribbon::Tool fromTable(const char* id, bool button = false) {
+  Ribbon::Tool t;
+  t.id = id;
+  if (const SketchToolDef* d = sketchToolById(id)) {
+    t.label = d->title;
+    t.icon = d->icon;
+    t.help = QString::fromUtf8(d->summary) + QStringLiteral("\n\n") + QString::fromUtf8(d->hint);
+    t.shortcut = d->shortcut;
+  }
+  t.menuOnly = !button;
+  return t;
+}
+
+Ribbon::Tool tool(const QString& id, const QString& label, const QString& icon, const QString& help,
+                  bool button = false, const QString& shortcut = {}) {
+  Ribbon::Tool t;
+  t.id = id, t.label = label, t.icon = icon, t.help = help, t.shortcut = shortcut, t.menuOnly = !button;
+  return t;
+}
+
+// Something Fusion has that BrazenWorks doesn't yet: shown, greyed out.
+Ribbon::Tool later(const QString& label, const QString& icon, const QString& help = {}, bool button = false) {
+  Ribbon::Tool t = tool(QStringLiteral("later.") + label, label, icon, help, button);
+  t.tip = kLaterTip;
+  return t;
+}
+
+Ribbon::Tool in(Ribbon::Tool t, const QString& submenu) {
+  t.submenu = submenu;
+  return t;
+}
+
+Ribbon::Tool sep(Ribbon::Tool t) {
+  t.separator = true;
+  return t;
+}
+
 QVector<Ribbon::Workspace> sketchWorkspace() {
   using G = Ribbon::Group;
   using T = Ribbon::Tool;
-  Ribbon::Workspace w{
-      "Design",
-      {"SKETCH"},
-      {
-          G{"CREATE",
-            {T{"sketch.line", "Line (L)", "line", {}}, T{"sketch.rectangle", "2-Point Rectangle (R)", "rectangle", {}},
-             T{"sketch.circle", "Center Diameter Circle (C)", "circle", {}},
-             T{"sketch.arc", "3-Point Arc (A)", "arc", {}}, T{"sketch.polygon", "Polygon", "polygon", {}},
-             T{"sketch.spline", "Fit Point Spline", "spline", {}},
-             T{"sketch.slot", "Center to Center Slot", "sketch-slot", {}, false, true},
-             T{"sketch.rectangle3", "3-Point Rectangle", "rectangle3", {}, false, true},
-             T{"sketch.rectanglec", "Center Rectangle", "rectanglec", {}, false, true},
-             T{"sketch.circle2", "2-Point Circle", "circle2", {}, false, true},
-             T{"sketch.circle3", "3-Point Circle", "circle3", {}, false, true},
-             T{"sketch.arcc", "Center Point Arc", "arcc", {}, false, true},
-             T{"sketch.arct", "Tangent Arc", "arct", {}, false, true},
-             T{"sketch.ellipse", "Ellipse", "ellipse", {}, false, true},
-             T{"sketch.point", "Point (P)", "point", {}, false, true},
-             T{"sketch.mirror", "Mirror", "mirror", {}, false, true},
-             T{"sketch.patternc", "Circular Pattern", "patternc", {}, false, true},
-             T{"sketch.patternr", "Rectangular Pattern", "patternr", {}, false, true},
-             T{"sketch.project", "Project", "project", {}, false, true}}},
-          G{"MODIFY",
-            {T{"sketch.fillet", "Fillet", "sketch-fillet", {}}, T{"sketch.trim", "Trim (T)", "trim", {}},
-             T{"sketch.offset", "Offset (O)", "offset", {}},
-             T{"sketch.extend", "Extend", "extend", {}, false, true},
-             T{"sketch.move", "Move/Copy", "move", {}, false, true},
-             T{"sketch.chamfer", "Chamfer", "sketch-chamfer", {}, false, true},
-             T{"sketch.break", "Break", "break", {}, false, true},
-             T{"sketch.rotate", "Rotate", "rotate", {}, false, true},
-             T{"sketch.scale", "Sketch Scale", "scale", {}, false, true},
-             T{"sketch.construction", "Construction (X)", "construction", {}, false, true},
-             T{"sketch.delete", "Delete (Del)", "close", {}, false, true}}},
-          G{"CONSTRAINTS",
-            {T{"sketch.c.coincident", "Coincident", "coincident", {}},
-             T{"sketch.c.horizontal", "Horizontal", "horizontal", {}},
-             T{"sketch.c.vertical", "Vertical", "vertical", {}},
-             T{"sketch.c.parallel", "Parallel", "parallel", {}},
-             T{"sketch.c.perpendicular", "Perpendicular", "perpendicular", {}},
-             T{"sketch.c.tangent", "Tangent", "tangent", {}}, T{"sketch.c.equal", "Equal", "equal", {}},
-             T{"sketch.c.midpoint", "Midpoint", "midpoint", {}},
-             T{"sketch.c.concentric", "Concentric", "concentric", {}},
-             T{"sketch.c.collinear", "Collinear", "collinear", {}},
-             T{"sketch.c.symmetric", "Symmetric", "symmetric", {}}, T{"sketch.c.fix", "Fix", "fix", {}},
-             T{"sketch.c.smooth", "Smooth (G2)", "smooth", {}},
-             T{"sketch.autoconstrain", "Auto Constrain", "autoconstrain", {}}},
-            /*compact=*/true},
-          G{"INSPECT", {T{"sketch.dimension", "Sketch Dimension (D)", "dimension", {}}}},
-          G{"SELECT", {T{"sketch.select", "Select (S)", "select", {}}}},
-          G{"FINISH SKETCH", {T{"sketch.finish", "Finish Sketch", "check", {}, /*primary=*/true}}},
-      }};
+  const QString con = QStringLiteral("Adds a constraint between sketch geometry.\n\n");
+
+  G create{"CREATE",
+           {fromTable("sketch.line", true), fromTable("sketch.midline"),
+            in(fromTable("sketch.rectangle", true), "Rectangle"), in(fromTable("sketch.rectangle3"), "Rectangle"),
+            in(fromTable("sketch.rectanglec"), "Rectangle"),
+            in(tool("sketch.rectround", "2-Point Rounded Rectangle", "rectround",
+                    "Creates a rectangle with rounded corners, all the same radius.\n\nClick two opposite corners; "
+                    "change the corner radius by dimensioning one corner."),
+               "Rectangle"),
+            in(tool("sketch.rectcround", "Center Rounded Rectangle", "rectcround",
+                    "Creates a rectangle with rounded corners from its centre.\n\nClick the centre, then a corner."),
+               "Rectangle"),
+            in(fromTable("sketch.circle", true), "Circle"), in(fromTable("sketch.circle2"), "Circle"),
+            in(fromTable("sketch.circle3"), "Circle"), in(later("2-Tangent Circle", "circle2"), "Circle"),
+            in(later("3-Tangent Circle", "circle3"), "Circle"),
+            in(fromTable("sketch.arc"), "Arc"), in(fromTable("sketch.arcc"), "Arc"), in(fromTable("sketch.arct"), "Arc"),
+            in(fromTable("sketch.polygonc"), "Polygon"), in(fromTable("sketch.polygon"), "Polygon"),
+            in(fromTable("sketch.polygone"), "Polygon"),
+            fromTable("sketch.ellipse"),
+            in(fromTable("sketch.slot"), "Slot"), in(fromTable("sketch.sloto"), "Slot"), in(fromTable("sketch.slotc"), "Slot"),
+            in(later("Three Point Arc Slot", "sketch-slot"), "Slot"), in(later("Center Point Arc Slot", "sketch-slot"), "Slot"),
+            in(fromTable("sketch.spline", true), "Spline"), in(later("Control Point Spline", "spline-cp"), "Spline"),
+            later("Conic Curve", "conic"), fromTable("sketch.point"), later("Text", "text"),
+            sep(fromTable("sketch.mirror", true)), fromTable("sketch.patternc"), fromTable("sketch.patternr"),
+            sep(in(fromTable("sketch.project"), "Project / Include")), in(later("Intersect", "project"), "Project / Include"),
+            in(later("Spun Profile", "project"), "Project / Include"),
+            in(later("Include 3D Geometry", "project"), "Project / Include"),
+            in(later("Project To Surface", "project"), "Project / Include"),
+            in(later("Intersection Curve", "project"), "Project / Include"),
+            in(later("Isoparametric Curve", "project"), "Project / Include"),
+            sep(fromTable("sketch.dimension", true))},
+           false, 1};
+  G modify{"MODIFY",
+           {fromTable("sketch.fillet", true), in(fromTable("sketch.chamfer"), "Chamfer"),
+            in(later("Distance and Angle Chamfer", "sketch-chamfer"), "Chamfer"),
+            in(later("Two Distance Chamfer", "sketch-chamfer"), "Chamfer"), later("Blend Curve", "blend"),
+            fromTable("sketch.offset", true), sep(fromTable("sketch.trim", true)), fromTable("sketch.extend", true),
+            later("Extend to Meet", "extend"), fromTable("sketch.break"), later("Split at Point", "break"),
+            fromTable("sketch.scale"), fromTable("sketch.move"), fromTable("sketch.rotate"),
+            sep(tool("sketch.construction", "Construction", "construction",
+                     "Switches the selected curves between normal and construction geometry.", false, "X")),
+            later("Centerline", "construction"), sep(later("Create Block", "block")), later("Edit Block", "block"),
+            later("Explode Block", "block"),
+            sep(later("Change Parameters", "fx", "Edit the model's named values."))},
+           false, 2};
+  G constraints{"CONSTRAINTS",
+                {tool("sketch.autoconstrain", "AutoConstrain", "autoconstrain",
+                      "Adds the constraints the drawing already shows: joined ends, horizontal and vertical lines, "
+                      "tangent arcs.",
+                      true),
+                 later("AutoConstrain from datum", "autoconstrain"),
+                 tool("sketch.c.hv", "Horizontal/Vertical", "hv",
+                      con + "Pick a line, or two points: they line up horizontally or vertically, whichever is closer.",
+                      true),
+                 tool("sketch.c.coincident", "Coincident", "coincident", con + "Pick a point and a point or curve.", true),
+                 tool("sketch.c.tangent", "Tangent", "tangent", con + "Pick a curve and a line or curve.", true),
+                 tool("sketch.c.equal", "Equal", "equal", con + "Pick two lines (same length) or two circles/arcs.", true),
+                 tool("sketch.c.parallel", "Parallel", "parallel", con + "Pick two lines.", true),
+                 tool("sketch.c.perpendicular", "Perpendicular", "perpendicular", con + "Pick two lines.", true),
+                 tool("sketch.c.fix", "Fix/UnFix", "fix", con + "Pick a point or curve to lock it; pick it again to free it.",
+                      true),
+                 tool("sketch.c.midpoint", "MidPoint", "midpoint", con + "Pick a point, then a line.", true),
+                 tool("sketch.c.concentric", "Concentric", "concentric", con + "Pick two circles or arcs.", true),
+                 tool("sketch.c.collinear", "Collinear", "collinear", con + "Pick two lines.", true),
+                 tool("sketch.c.symmetric", "Symmetry", "symmetric", con + "Pick two points or curves, then the line of symmetry.",
+                      true),
+                 tool("sketch.c.smooth", "Curvature", "smooth", con + "Pick a spline and a curve that meets it: they join smoothly (G2)."),
+                 later("Polygon", "polygon"), later("Equal Spacing", "equal"),
+                 sep(tool("sketch.unconstrained", "Show Unconstrained", "select",
+                          "Selects everything that can still move, so you can see what needs a dimension or "
+                          "constraint."))},
+                false, 3};
+  for (Ribbon::Tool& t : constraints.tools) {
+    static const QHash<QString, QString> keys = {{"sketch.c.hv", "Shift+V"}, {"sketch.c.coincident", "Shift+C"}, {"sketch.c.tangent", "Shift+T"}, {"sketch.c.equal", "Shift+E"}, {"sketch.c.parallel", "Shift+P"}, {"sketch.c.perpendicular", "Shift+R"}, {"sketch.c.fix", "Shift+F"}, {"sketch.c.midpoint", "Shift+M"}, {"sketch.c.concentric", "Shift+O"}, {"sketch.c.collinear", "Shift+L"}, {"sketch.c.symmetric", "Shift+S"}, {"sketch.c.smooth", "Shift+G"}};
+    if (keys.contains(t.id)) t.shortcut = keys.value(t.id);
+  }
+  G configure{"CONFIGURE",
+              {later("Configure", "configure", {}, true), later("Display Configuration Table", "config-table", {}, true),
+               later("Create Configuration Rules", "config-rules", {}, true)},
+              false, 6};
+  G inspect{"INSPECT",
+            {later("Measure", "measure", "Measures distances and angles.", true),
+             later("Section Analysis", "section", {}, true), later("Interference", "interference"),
+             later("Center of Mass", "com"), sep(later("Curvature Comb Analysis", "smooth")),
+             later("Curvature Map Analysis", "section"), later("Draft Analysis", "section"),
+             later("Environment Map Analysis", "section"), later("Isocurve Analysis", "section"),
+             later("Zebra Analysis", "section"), sep(later("Accessibility Analysis", "section")),
+             later("Minimum Radius Analysis", "section"), sep(later("Fastener Stack Analysis", "section")),
+             later("Navigator", "section"), sep(later("Display Component Colors", "section")),
+             later("Display Mesh Face Groups", "section"), sep(later("History", "section"))},
+            false, 4};
+  G insert{"INSERT",
+           {later("Decal", "decal"), later("Canvas", "canvas", {}, true), later("Insert SVG", "svg"),
+            later("Insert DXF", "dxf"), later("Insert Points", "dxf"), later("Insert Mesh", "insert-mesh", {}, true), later("Insert Fastener", "insert"),
+            later("Duplicate With Joints", "insert"), later("Insert Derive", "insert-derive", {}, true),
+            later("Insert Supplier Part", "insert")},
+           false, 5};
+  T window = tool("sketch.select", "Window Selection", "window-select",
+                  "Drag a box: left to right selects what is inside, right to left what it touches.", false, "1");
+  G select{"SELECT",
+           {fromTable("sketch.select", true), sep(window), later("Freeform Selection", "window-select"),
+            later("Paint Selection", "window-select"), sep(later("Selection Tools", "window-select")),
+            sep(later("Selection Priority", "window-select")), later("Selection Filters", "window-select"),
+            sep(tool("sketch.clearsel", "Clear Selection", "close", "Deselects everything."))},
+           false, 0};
+  T finish = tool("sketch.finish", "Finish Sketch", "check", "Closes the sketch and keeps the changes.", true,
+                  "Ctrl+Return");
+  finish.primary = true;
+  G finishGroup{"FINISH SKETCH",
+                {finish, tool("sketch.cancel", "Cancel Sketch", "close", "Discards every change made since the sketch was opened.")},
+                false, 0};
+  Ribbon::Workspace w{"Design",
+                      {"SOLID", "SURFACE", "MESH", "SHEET METAL", "PLASTIC", "MANAGE", "UTILITIES", "AUTOMATION", "SKETCH"},
+                      {create, modify, constraints, configure, inspect, insert, select, finishGroup}};
+  w.activeTab = 8;
   return {w};
 }
 
@@ -967,6 +1071,7 @@ void MainWindow::enterSketch(std::uint64_t sketch) {
     if (m == SketchEditor::Mode::Constrain) {
       for (const auto& t : kConstraintTools)
         if (t.kind == ed->constraintKind()) id = t.id;
+      if (ed->autoHV()) id = QStringLiteral("sketch.c.hv");
     } else if (const SketchToolDef* t = sketchToolFor(m)) {
       id = t->id;
     }
@@ -1004,6 +1109,7 @@ void MainWindow::enterSketch(std::uint64_t sketch) {
   });
   sketchPanel_->applyShadow();
   connect(palette, &SketchPalette::toolRequested, this, &MainWindow::onSketchTool);
+  connect(palette, &SketchPalette::gridToggled, this, [this](bool on) { viewport_->setGridVisible(on); });
   connect(palette, &SketchPalette::finishRequested, this, [this] { QTimer::singleShot(0, this, &MainWindow::finishSketch); });
   connect(palette, &SketchPalette::cancelRequested, this, [this] { QTimer::singleShot(0, this, &MainWindow::cancelSketch); });
   connect(palette, &SketchPalette::lookAtRequested, this, [this, sketch] {
@@ -1080,6 +1186,17 @@ void MainWindow::onSketchTool(const QString& id) {
     ed->deleteSelection();
   } else if (id == "sketch.autoconstrain") {
     ed->autoConstrain();
+  } else if (id == "sketch.rectround" || id == "sketch.rectcround") {
+    ed->setMode(id == "sketch.rectround" ? SketchEditor::Mode::Rectangle : SketchEditor::Mode::RectangleCentre);
+    ed->setRoundCorners(true);
+  } else if (id == "sketch.unconstrained") {
+    ed->selectUnconstrained();
+  } else if (id == "sketch.clearsel") {
+    ed->setMode(SketchEditor::Mode::Select);
+  } else if (id == "sketch.cancel") {
+    QTimer::singleShot(0, this, &MainWindow::cancelSketch);
+  } else if (id == "sketch.c.hv") {
+    ed->setConstraint(model::ConstraintKind::Horizontal, /*autoHV=*/true);
   } else if (const SketchToolDef* t = sketchToolById(id)) {
     ed->setMode(t->mode);
   } else {

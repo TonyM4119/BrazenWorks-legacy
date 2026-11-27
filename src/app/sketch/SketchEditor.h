@@ -18,6 +18,7 @@
 #include <vector>
 
 class CommandDialog;
+class QLabel;
 class QLineEdit;
 
 // Edits one sketch of the timeline in the 3D view: drawing tools, snapping,
@@ -33,6 +34,8 @@ class SketchEditor : public QObject, public ViewportTool {
     Rectangle3, RectangleCentre, Circle2, Circle3, CentreArc, TangentArc, Polygon, Ellipse, Slot, Spline,
     // Modify tools.
     Trim, Extend, Break, Fillet, Chamfer, Offset, Mirror, Move, Rotate, Scale, PatternRect, PatternCirc, Project,
+    // Variants (Fusion's submenus).
+    MidLine, PolygonCirc, PolygonEdge, SlotOverall, SlotCentre,
   };
   static bool isDrawing(Mode m);  // places points with snapping
   static bool picksCurves(Mode m);  // Mirror, Move…: pick curves first, Enter, then the rest
@@ -52,7 +55,12 @@ class SketchEditor : public QObject, public ViewportTool {
   model::ConstraintKind constraintKind() const { return constraintKind_; }
 
   void setMode(Mode mode);
-  void setConstraint(model::ConstraintKind kind);  // enters Constrain mode
+  // autoHV: Fusion's Horizontal/Vertical, which picks by the geometry's direction.
+  void setConstraint(model::ConstraintKind kind, bool autoHV = false);
+  bool autoHV() const { return autoHV_; }
+  // Rounded rectangles: the next rectangles get their corners filleted.
+  void setRoundCorners(bool on) { roundCorners_ = on; }
+  bool roundCorners() const { return roundCorners_; }  // enters Constrain mode
   void toggleConstruction();
   void deleteSelection();
   // Re-reads the sketch (after undo/redo or a unit change) and redraws.
@@ -261,6 +269,18 @@ class SketchEditor : public QObject, public ViewportTool {
   std::vector<TopoDS_Shape> bodyEdges_;
   int hoverEdge_ = -1;
   int polygonSides_ = 6;
+  bool autoHV_ = false;
+  bool roundCorners_ = false;
+  bool sizeAt_[2] = {false, false};  // size boxes sit on these screen spots (live dimensions)
+  QPointF sizeSpot_[2];
+  void roundRectangle(const std::vector<std::uint64_t>& lines, double w, double h);
+
+  // Fusion-style cursor (arrow, crosshair, the tool's icon) and the prompt
+  // that follows it ("Place first corner").
+  void updateCursor();
+  QString stepPrompt() const;
+  void movePrompt();
+  QLabel* prompt_ = nullptr;
 
   // Box selection: left to right takes what is inside, right to left what
   // the box touches (as Fusion does).

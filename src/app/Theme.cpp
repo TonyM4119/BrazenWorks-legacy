@@ -68,6 +68,7 @@ QString styleSheet(const Palette& p) {
 * { color: {text}; font-size: 12px; }
 QMainWindow, QWidget#Central { background: {appBackground}; }
 QToolTip { background: {panel}; color: {text}; border: 1px solid {panelBorder}; padding: 4px 6px; }
+#CursorPrompt { background: {panel}; color: {text}; border: 1px solid {panelBorder}; padding: 2px 6px; }
 
 /* Document bar */
 #DocumentBar { background: {barBackground}; border-bottom: 1px solid #2A2D32; }
@@ -156,6 +157,12 @@ QSpinBox::up-button, QSpinBox::down-button { width: 14px; border: 0; }
 #InfoTable QHeaderView::section { background: {toolbar}; color: {textMuted}; border: 0; padding: 4px 8px; }
 #PaletteScroll, #PaletteScroll > QWidget > QWidget { background: transparent; }
 #PaletteHeading { color: {textMuted}; font-weight: 600; font-size: 11px; padding-top: 4px; }
+#PaletteSection { font-weight: 700; }
+#PaletteSection[state="full"] { color: {success}; }
+#PaletteSection[state="conflict"] { color: {danger}; }
+#PaletteRow:hover { background: {hover}; border-radius: 4px; }
+QToolButton#PaletteArrow { background: transparent; border: none; padding: 0; }
+QToolButton#PaletteTool:checked { background: {selection}; border-color: {accent}; }
 QToolButton#PaletteHeading { background: transparent; border: none; padding: 4px 0 0 0; }
 QToolButton#PaletteHeading:hover { color: {text}; }
 #PaletteDof { font-weight: 600; }

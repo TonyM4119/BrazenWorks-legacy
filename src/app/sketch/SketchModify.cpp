@@ -324,6 +324,7 @@ void SketchEditor::finishPicking() {
     case Mode::PatternCirc: emit message(tr("Click the centre of the pattern.")); break;
     default: break;
   }
+  updateCursor();
   drawHover();
 }
 

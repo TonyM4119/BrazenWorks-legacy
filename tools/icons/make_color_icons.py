@@ -561,6 +561,206 @@ def _(ic):
     mark(ic, "=", 11, 17, AMBER, 8)
 
 
+@icon("midline")
+def _(ic):
+    line(ic, [(5, 25), (27, 7)])
+    pt(ic, 16, 16, AMBER, 3.6)
+    pt(ic, 5, 25)
+    pt(ic, 27, 7)
+
+
+def _polygon(ic, r_ring, mark_side):
+    hexagon = [(16 + 10 * math.cos(math.radians(30 + 60 * k)), 16 + 10 * math.sin(math.radians(30 + 60 * k)))
+               for k in range(6)]
+    poly(ic, hexagon, "#4A9BE0", INK, 1.5, 'fill-opacity="0.15"')
+    ic.add(f'<circle cx="16" cy="16" r="{r_ring}" fill="none" stroke="{INK_DIM}" stroke-width="1" '
+           'stroke-dasharray="1.6 1.4"/>')
+    if mark_side:
+        line(ic, [hexagon[1], hexagon[2]], AMBER, 2.0)
+
+
+@icon("polygonc")
+def _(ic):
+    _polygon(ic, 8.66, False)
+
+
+@icon("polygone")
+def _(ic):
+    _polygon(ic, 0.01, True)
+
+
+@icon("sloto")
+def _(ic):
+    path(ic, "M10,11 H22 A5,5 0 0 1 22,21 H10 A5,5 0 0 1 10,11 Z", fill="#4A9BE0", extra='fill-opacity="0.18"')
+    pt(ic, 5, 16, AMBER)
+    pt(ic, 27, 16, AMBER)
+
+
+@icon("slotc")
+def _(ic):
+    path(ic, "M10,11 H22 A5,5 0 0 1 22,21 H10 A5,5 0 0 1 10,11 Z", fill="#4A9BE0", extra='fill-opacity="0.18"')
+    pt(ic, 16, 16, AMBER, 3.4)
+    pt(ic, 22, 16)
+
+
+@icon("hv")
+def _(ic):
+    line(ic, [(4, 26), (18, 26)], AMBER, 2.0)
+    line(ic, [(24, 6), (24, 26)], AMBER, 2.0)
+    mark(ic, "H", 10, 20, INK, 9)
+    mark(ic, "V", 18, 12, INK, 9)
+
+
+@icon("rectround")
+def _(ic):
+    ic.add(f'<rect x="5" y="8" width="22" height="16" rx="4" fill="#4A9BE0" fill-opacity="0.18" stroke="{INK}" '
+           'stroke-width="1.6"/>')
+    pt(ic, 5, 24)
+    pt(ic, 27, 8)
+
+
+@icon("rectcround")
+def _(ic):
+    ic.add(f'<rect x="5" y="8" width="22" height="16" rx="4" fill="#4A9BE0" fill-opacity="0.18" stroke="{INK}" '
+           'stroke-width="1.6"/>')
+    pt(ic, 16, 16, AMBER)
+    pt(ic, 27, 8)
+
+
+@icon("spline-cp")
+def _(ic):
+    line(ic, [(4, 24), (10, 6), (22, 26), (28, 8)], INK_DIM, 1.0, "1.6 1.4")
+    path(ic, "M4,24 C10,6 22,26 28,8")
+    for x, y in ((4, 24), (10, 6), (22, 26), (28, 8)):
+        ic.add(f'<rect x="{x - 2}" y="{y - 2}" width="4" height="4" fill="{POINT}"/>')
+
+
+@icon("conic")
+def _(ic):
+    path(ic, "M5,26 Q16,0 27,26")
+    pt(ic, 5, 26)
+    pt(ic, 27, 26)
+
+
+@icon("text")
+def _(ic):
+    mark(ic, "A", 16, 25, INK, 22)
+
+
+@icon("blend")
+def _(ic):
+    line(ic, [(3, 22), (11, 22)])
+    line(ic, [(21, 10), (29, 10)])
+    path(ic, "M11,22 C16,22 16,10 21,10", stroke=AMBER, sw=1.8)
+
+
+@icon("fx")
+def _(ic):
+    mark(ic, "fx", 16, 22, INK, 16)
+
+
+@icon("configure")
+def _(ic):
+    box(ic, Iso(15, 15, 0.8), -6, -6, 0, 12, 12, 9, GREY)
+    badge(ic, 24, 24, "plus", POINT, 5)
+
+
+@icon("config-table")
+def _(ic):
+    ic.add(f'<rect x="5" y="6" width="22" height="20" rx="2" fill="none" stroke="{INK}" stroke-width="1.5"/>')
+    for y in (12, 17, 22):
+        line(ic, [(5, y), (27, y)], INK_DIM, 1.0)
+    line(ic, [(13, 6), (13, 26)], INK_DIM, 1.0)
+
+
+@icon("config-rules")
+def _(ic):
+    for y, c in ((9, "#4A9BE0"), (16, "#B04DE0"), (23, "#3DBB4F")):
+        ic.add(f'<rect x="6" y="{y - 2.5}" width="20" height="5" rx="2.5" fill="{c}"/>')
+
+
+@icon("section")
+def _(ic):
+    ic.add(f'<rect x="6" y="6" width="20" height="20" fill="#4A9BE0" fill-opacity="0.3" stroke="{INK}" stroke-width="1.4"/>')
+    line(ic, [(16, 3), (16, 29)], AMBER, 1.8)
+
+
+@icon("interference")
+def _(ic):
+    ic.add(f'<rect x="5" y="5" width="15" height="15" fill="none" stroke="{INK}" stroke-width="1.4"/>')
+    ic.add(f'<rect x="12" y="12" width="15" height="15" fill="none" stroke="{INK}" stroke-width="1.4"/>')
+    ic.add(f'<rect x="12" y="12" width="8" height="8" fill="{RED}"/>')
+
+
+@icon("com")
+def _(ic):
+    ic.add(f'<circle cx="16" cy="16" r="10" fill="{INK}"/>')
+    path(ic, "M16,6 A10,10 0 0 1 26,16 H16 Z M16,26 A10,10 0 0 1 6,16 H16 Z", fill="#222")
+
+
+@icon("decal")
+def _(ic):
+    ic.add(f'<rect x="5" y="7" width="16" height="13" fill="#4A9BE0" stroke="{INK}" stroke-width="1.2"/>')
+    box(ic, Iso(21, 22, 0.6), -5, -5, 0, 10, 10, 6, GREY)
+
+
+@icon("canvas")
+def _(ic):
+    ic.add('<rect x="4" y="6" width="24" height="20" rx="2" fill="#2E7BD6"/>')
+    poly(ic, [(4, 24), (13, 14), (20, 21), (24, 17), (28, 22), (28, 26), (4, 26)], "#9BD0FF")
+    ic.add('<circle cx="22" cy="11" r="2.4" fill="#FFE27A"/>')
+
+
+@icon("svg")
+def _(ic):
+    ic.add(f'<rect x="7" y="4" width="18" height="24" rx="2" fill="#F3F5F7"/>')
+    mark(ic, "SVG", 16, 24, "#222", 7)
+    arrow(ic, 4, 10, 14, 10, POINT, 1.8, 3)
+
+
+@icon("dxf")
+def _(ic):
+    ic.add(f'<rect x="7" y="4" width="18" height="24" rx="2" fill="#F3F5F7"/>')
+    mark(ic, "DXF", 16, 24, "#222", 7)
+    arrow(ic, 4, 10, 14, 10, POINT, 1.8, 3)
+
+
+@icon("insert-mesh")
+def _(ic):
+    poly(ic, [(16, 6), (27, 12), (27, 23), (16, 28), (5, 23), (5, 12)], "#C8A45A", "#7A5E2A", 1.0)
+    line(ic, [(5, 12), (16, 18), (27, 12)], "#7A5E2A", 0.9)
+    line(ic, [(16, 18), (16, 28)], "#7A5E2A", 0.9)
+    arrow(ic, 6, 4, 14, 8, POINT, 1.8, 3)
+
+
+@icon("insert-derive")
+def _(ic):
+    box(ic, Iso(18, 15, 0.8), -6, -6, 0, 12, 12, 9, GREY)
+    arrow(ic, 4, 24, 12, 18, INK, 1.8, 3)
+
+
+@icon("window-select")
+def _(ic):
+    ic.add(f'<rect x="4" y="4" width="20" height="18" fill="#4A9BE0" fill-opacity="0.2" stroke="{INK}" '
+           'stroke-width="1.3" stroke-dasharray="2.4 1.8"/>')
+    poly(ic, [(17, 15), (17, 29), (20.5, 25.5), (23, 30), (25, 29), (22.5, 24.5), (27, 24.5)], INK, "#222", 0.8)
+
+
+@icon("block")
+def _(ic):
+    ic.add(f'<rect x="5" y="9" width="18" height="16" fill="none" stroke="{INK}" stroke-width="1.4"/>')
+    for y in (14, 19):
+        line(ic, [(5, y), (23, y)], INK_DIM, 1.0)
+    badge(ic, 24, 9, "plus", GREEN, 4.5)
+
+
+@icon("lookat")
+def _(ic):
+    ic.add('<rect x="5" y="9" width="22" height="15" rx="2" fill="#2E7BD6" stroke="#9BD0FF" stroke-width="1.2"/>')
+    poly(ic, [(9, 9), (12, 4), (24, 4), (27, 9)], "#4A5560")
+    line(ic, [(13, 28), (19, 28)], INK_DIM, 1.6)
+
+
 def constraint(name, draw):
     ICONS[name] = draw
 

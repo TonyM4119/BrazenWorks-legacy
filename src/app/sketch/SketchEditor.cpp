@@ -472,6 +472,8 @@ SketchEditor::SketchEditor(Viewport* view, Host host, std::uint64_t sketch, QObj
 }
 
 SketchEditor::~SketchEditor() {
+  view_->unsetCursor();
+  delete prompt_;
   closeValueEditor();
   clearDisplay();
   view_->setGridPlane(geom::Plane{});
@@ -710,7 +712,8 @@ bool SketchEditor::isDrawing(Mode m) {
     case Mode::Line: case Mode::Rectangle: case Mode::Circle: case Mode::Arc: case Mode::Point:
     case Mode::Rectangle3: case Mode::RectangleCentre: case Mode::Circle2: case Mode::Circle3:
     case Mode::CentreArc: case Mode::TangentArc: case Mode::Polygon: case Mode::Ellipse: case Mode::Slot:
-    case Mode::Spline:
+    case Mode::Spline: case Mode::MidLine: case Mode::PolygonCirc: case Mode::PolygonEdge: case Mode::SlotOverall:
+    case Mode::SlotCentre:
       return true;
     default: return false;
   }
@@ -736,6 +739,7 @@ void SketchEditor::setMode(Mode mode) {
   mode_ = mode;
   opCurves_ = chosen;
   opStage_ = chosen.empty() ? 0 : 1;
+  roundCorners_ = false;  // MainWindow sets it again for the rounded rectangle tools
   bodyEdges_.clear();
   hoverEdge_ = -1;
   if (mode == Mode::Project && host_.body) {
@@ -749,11 +753,13 @@ void SketchEditor::setMode(Mode mode) {
   redraw();
   drawPreview();
   hintForMode();
+  updateCursor();
   emit modeChanged(mode);
 }
 
-void SketchEditor::setConstraint(K kind) {
+void SketchEditor::setConstraint(K kind, bool autoHV) {
   constraintKind_ = kind;
+  autoHV_ = autoHV && kind == K::Horizontal;
   // Selected geometry first, then the tool: apply right away (Fusion style).
   if (mode_ == Mode::Select && !selected_.isEmpty()) {
     std::vector<Hit> hits;
@@ -945,7 +951,8 @@ bool SketchEditor::mousePress(QMouseEvent* e) {
       return true;
     case Mode::Rectangle3: case Mode::RectangleCentre: case Mode::Circle2: case Mode::Circle3:
     case Mode::CentreArc: case Mode::TangentArc: case Mode::Polygon: case Mode::Ellipse: case Mode::Slot:
-    case Mode::Spline:
+    case Mode::Spline: case Mode::MidLine: case Mode::PolygonCirc: case Mode::PolygonEdge: case Mode::SlotOverall:
+    case Mode::SlotCentre:
       clickShape(snap(pos), Typed());
       return true;
     case Mode::Trim: case Mode::Extend: case Mode::Break: case Mode::Fillet: case Mode::Chamfer:
@@ -982,6 +989,7 @@ bool SketchEditor::mousePress(QMouseEvent* e) {
 bool SketchEditor::mouseMove(QMouseEvent* e) {
   cursor_ = e->position();
   hasCursor_ = true;
+  movePrompt();
   if (e->buttons() & Qt::MiddleButton) {
     redrawTimer_.start();
     return false;
@@ -1106,6 +1114,25 @@ bool SketchEditor::mouseDoubleClick(QMouseEvent* e) {
 }
 
 bool SketchEditor::keyPress(QKeyEvent* e) {
+  if (e->modifiers() == Qt::ShiftModifier) {
+    // Constraint shortcuts (as MitCAD): Shift + a letter.
+    struct S { int key; K kind; bool hv; };
+    static const S keys[] = {{Qt::Key_V, K::Horizontal, true}, {Qt::Key_C, K::Coincident, false},
+                             {Qt::Key_T, K::Tangent, false},   {Qt::Key_E, K::Equal, false},
+                             {Qt::Key_P, K::Parallel, false},  {Qt::Key_R, K::Perpendicular, false},
+                             {Qt::Key_F, K::Fix, false},       {Qt::Key_M, K::Midpoint, false},
+                             {Qt::Key_O, K::Concentric, false}, {Qt::Key_L, K::Collinear, false},
+                             {Qt::Key_S, K::Symmetric, false}, {Qt::Key_G, K::Smooth, false}};
+    for (const S& k : keys)
+      if (e->key() == k.key) {
+        setConstraint(k.kind, k.hv);
+        return true;
+      }
+  }
+  if (e->modifiers() == Qt::ControlModifier && (e->key() == Qt::Key_Return || e->key() == Qt::Key_Enter)) {
+    emit finishRequested();
+    return true;
+  }
   if (e->modifiers() == Qt::ControlModifier) {
     switch (e->key()) {
       case Qt::Key_C: copySelection(); return true;
@@ -1155,6 +1182,7 @@ bool SketchEditor::keyPress(QKeyEvent* e) {
     case Qt::Key_S: setMode(Mode::Select); return true;
     case Qt::Key_X: toggleConstruction(); return true;
     case Qt::Key_T: setMode(Mode::Trim); return true;
+    case Qt::Key_M: setMode(Mode::Move); return true;
     case Qt::Key_O: setMode(Mode::Offset); return true;
     case Qt::Key_Return:
     case Qt::Key_Enter:
@@ -1274,6 +1302,9 @@ void SketchEditor::clickDraw(const Hit& hIn, const Typed& typed) {
         if (typed.set[0] && lines.size() > 0) addConstraint(K::Length, lines[0], 0, 0, typed.value[0], true);
         if (typed.set[1] && lines.size() > 1) addConstraint(K::Length, lines[1], 0, 0, typed.value[1], true);
         markNew(std::vector<std::uint64_t>(lines.begin(), lines.end()));
+        if (roundCorners_)
+          roundRectangle(std::vector<std::uint64_t>(lines.begin(), lines.end()), std::abs(h.u - first.u),
+                         std::abs(h.v - first.v));
         return true;
       });
       clicks_.clear();
@@ -1388,16 +1419,16 @@ void SketchEditor::selectUnconstrained() {
 int SketchEditor::sizeBoxCount() const {
   if (clicks_.empty()) return 0;
   switch (mode_) {
-    case Mode::Line: case Mode::Circle: return 1;
-    case Mode::Rectangle: case Mode::RectangleCentre: case Mode::Polygon: return 2;
-    case Mode::Slot: return clicks_.size() == 2 ? 1 : 0;
+    case Mode::Line: case Mode::Circle: case Mode::MidLine: return 1;
+    case Mode::Rectangle: case Mode::RectangleCentre: case Mode::Polygon: case Mode::PolygonCirc: return 2;
+    case Mode::Slot: case Mode::SlotOverall: case Mode::SlotCentre: return clicks_.size() == 2 ? 1 : 0;
     default: return 0;
   }
 }
 
 bool SketchEditor::typedValue(int i, double& mm) {
   if (i >= 2 || !sizeEdit_[i] || !sizeTyped_[i]) return false;
-  if (mode_ == Mode::Polygon && i == 1) {  // number of sides
+  if ((mode_ == Mode::Polygon || mode_ == Mode::PolygonCirc) && i == 1) {  // number of sides
     bool ok = false;
     const int n = sizeEdit_[i]->text().trimmed().toInt(&ok);
     if (!ok || n < 3 || n > 64) return false;
@@ -1453,10 +1484,11 @@ void SketchEditor::showSizeBoxes(const double live[2], const QPointF& anchor) {
     }
     QLineEdit* e = sizeEdit_[i];
     if (!sizeTyped_[i] && !e->hasFocus()) {
-      if (mode_ == Mode::Polygon && i == 1) e->setText(tr("%1 sides").arg(int(live[i])));
+      if ((mode_ == Mode::Polygon || mode_ == Mode::PolygonCirc) && i == 1) e->setText(tr("%1 sides").arg(int(live[i])));
       else e->setText(qs(model::length_format(live[i], unit())));
     }
     QPoint at = anchor.toPoint() + QPoint(18, 14 + i * 30);
+    if (sizeAt_[i]) at = sizeSpot_[i].toPoint() - QPoint(e->width() / 2, e->height() / 2);
     at.setX(std::clamp(at.x(), 4, view_->width() - e->width() - 4));
     at.setY(std::clamp(at.y(), 4, view_->height() - e->height() - 4));
     e->move(at);
@@ -1518,6 +1550,7 @@ SketchEditor::Hit SketchEditor::typedTarget(const Hit& first, Hit cursor, Typed&
       break;
     }
     case Mode::Polygon:
+    case Mode::PolygonCirc:
       if (typed.set[0]) {
         double du = h.u - first.u, dv = h.v - first.v;
         double len = std::hypot(du, dv);
@@ -1983,18 +2016,51 @@ void SketchEditor::clickConstrain(const Hit& h) {
   switch (constraintKind_) {
     case K::Horizontal:
     case K::Vertical: {
-      const bool horiz = constraintKind_ == K::Horizontal;
+      bool horiz = constraintKind_ == K::Horizontal;
       if (picks_.size() == 1) {
-        if (isLine(a)) return apply(horiz ? K::Horizontal : K::Vertical, a);
+        if (isLine(a)) {
+          if (autoHV_) {  // whichever the line is closer to
+            const auto* e = entity(a.id);
+            horiz = std::abs(e->x1 - e->x0) >= std::abs(e->y1 - e->y0);
+          }
+          return apply(horiz ? K::Horizontal : K::Vertical, a);
+        }
         if (!isPt(a)) return wrong(tr("Pick a line, or two points."));
         emit message(tr("Pick the second point."));
         break;
       }
       if (!isPt(picks_[1])) return wrong(tr("Pick a line, or two points."));
+      if (autoHV_) {
+        auto pos = [this](const Hit& h, double& x, double& y) {
+          x = h.u, y = h.v;
+          if (const auto* e = entity(h.id); e && e->kind == EK::Point) x = e->x0, y = e->y0;
+        };
+        double x0, y0, x1, y1;
+        pos(a, x0, y0);
+        pos(picks_[1], x1, y1);
+        horiz = std::abs(x1 - x0) >= std::abs(y1 - y0);
+      }
       return apply(horiz ? K::HorizontalPoints : K::VerticalPoints, a, picks_[1]);
     }
     case K::Fix: {
       picks_.clear();
+      // Fix/UnFix: something already fixed comes loose.
+      {
+        std::vector<std::uint64_t> on = {a.id};
+        if (const auto* e = entity(a.id)) on.insert(on.end(), {e->p0, e->p1, e->p2, e->p3});
+        std::vector<std::uint64_t> fixes;
+        for (const auto& c : constraints_)
+          if (c.kind == K::Fix && c.a && std::find(on.begin(), on.end(), c.a) != on.end()) fixes.push_back(c.id);
+        if (!fixes.empty() && a.id) {
+          edit([&] {
+            for (std::uint64_t f : fixes) model::sketch_remove_constraint(tl(), sketch_, f);
+            return true;
+          });
+          emit message(tr("Unfixed."));
+          drawPreview();
+          return;
+        }
+      }
       if (isPt(a)) return apply(K::Fix, a);
       const auto* e = entity(a.id);
       if (usesSamples(e->kind)) return apply(K::Fix, a);  // the model fixes the whole curve
@@ -2299,6 +2365,8 @@ void SketchEditor::drawHover() {
 }
 
 void SketchEditor::drawPreview() {
+  movePrompt();
+  sizeAt_[0] = sizeAt_[1] = false;
   const theme::Palette& pal = theme::current();
   const geom::Plane gp = geomPlane(plane_);
   Overlay o;
@@ -2374,6 +2442,22 @@ void SketchEditor::drawPreview() {
         line(a.u, a.v, cu, a.v), line(cu, a.v, cu, cv), line(cu, cv, a.u, cv), line(a.u, cv, a.u, a.v);
         live[0] = std::abs(cu - a.u);
         live[1] = std::abs(cv - a.v);
+        // Live width and height dimensions, the type-in boxes sitting on them (as Fusion).
+        if (live[0] > 1e-9 && live[1] > 1e-9) {
+          const double y0 = std::min(a.v, cv), x1 = std::max(a.u, cu);
+          DimRef p0, p1, p2;
+          p0.u = std::min(a.u, cu), p0.v = y0;
+          p1.u = x1, p1.v = y0;
+          p2.u = x1, p2.v = std::max(a.v, cv);
+          const double wAt[2] = {(p0.u + p1.u) / 2, y0 - 26 * upp};
+          const double hAt[2] = {x1 + 26 * upp, (p1.v + p2.v) / 2};
+          DimShape dw, dh;
+          if (dimShape(K::HorizontalDistance, p0, p1, upp, nullptr, wAt, dw)) addDimensionGraphics(o, gp, dw, pal.accent);
+          if (dimShape(K::VerticalDistance, p1, p2, upp, nullptr, hAt, dh)) addDimensionGraphics(o, gp, dh, pal.accent);
+          sizeSpot_[0] = view_->project(world(wAt[0], wAt[1]));
+          sizeSpot_[1] = view_->project(world(hAt[0], hAt[1]));
+          sizeAt_[0] = sizeAt_[1] = true;
+        }
         break;
       }
       case Mode::Circle: {
@@ -2577,4 +2661,22 @@ void SketchEditor::dragLabel(const QPointF& pos) {
   if (!toPlane(pos, u, v)) return;
   storeLabel(labelDrag_, u, v);
   redraw();
+}
+
+// Rounded rectangles: fillet each corner of a new rectangle, all the same
+// size (Equal), as MitCAD's rounded rectangle tools do.
+void SketchEditor::roundRectangle(const std::vector<std::uint64_t>& lines, double w, double h) {
+  std::vector<std::uint64_t> corners;
+  for (std::uint64_t l : lines)
+    if (const auto* e = entity(l)) corners.push_back(e->p0);
+  const double r = 0.15 * std::min(w, h);
+  std::vector<std::uint64_t> arcs;
+  for (std::uint64_t c : corners) {
+    try {
+      arcs.push_back(model::sketch_fillet(tl(), sketch_, c, r));
+    } catch (const std::exception&) {
+    }
+  }
+  for (std::size_t i = 1; i < arcs.size(); ++i) addConstraint(K::Equal, arcs[0], arcs[i], 0, 0, true);
+  reload();
 }

@@ -33,6 +33,7 @@ qt_add_executable(app
   widgets/PreferencesDialog.h
   sketch/Pickers.cpp
   sketch/Pickers.h
+  sketch/SketchCursor.cpp
   sketch/SketchEditor.cpp
   sketch/SketchModify.cpp
   sketch/SketchShapes.cpp

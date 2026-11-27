@@ -60,8 +60,12 @@ geom::Seg2 arcSeg(double cx, double cy, double x0, double y0, double x1, double 
 // Number of clicks each tool takes.
 int clicksFor(M m) {
   switch (m) {
-    case M::RectangleCentre: case M::Circle2: case M::TangentArc: case M::Polygon: return 2;
-    case M::Rectangle3: case M::Circle3: case M::CentreArc: case M::Ellipse: case M::Slot: return 3;
+    case M::RectangleCentre: case M::Circle2: case M::TangentArc: case M::Polygon: case M::PolygonCirc:
+    case M::MidLine:
+      return 2;
+    case M::Rectangle3: case M::Circle3: case M::CentreArc: case M::Ellipse: case M::Slot: case M::SlotOverall:
+    case M::SlotCentre: case M::PolygonEdge:
+      return 3;
     default: return 0;
   }
 }
@@ -83,6 +87,67 @@ bool tangentArc(P2 p, P2 t, P2 q, P2& centre, bool& ccw) {
   const double r = (wx * wx + wy * wy) / denom;  // signed: + = centre on the left
   centre = {p.x + nx * r, p.y + ny * r};
   ccw = r > 0;
+  return true;
+}
+
+// The outline of a slot with arc centres a, b and radius r.
+void slotOutline(P2 a, P2 b, double r, std::vector<geom::Seg2>& segs) {
+  const double dx = b.x - a.x, dy = b.y - a.y, len = std::hypot(dx, dy);
+  if (len < 1e-9 || r < 1e-9) return;
+  const double nx = -dy / len, ny = dx / len;
+  segs.push_back(lineSeg(a.x + nx * r, a.y + ny * r, b.x + nx * r, b.y + ny * r));
+  segs.push_back(lineSeg(b.x - nx * r, b.y - ny * r, a.x - nx * r, a.y - ny * r));
+  segs.push_back(arcSeg(b.x, b.y, b.x - nx * r, b.y - ny * r, b.x + nx * r, b.y + ny * r));
+  segs.push_back(arcSeg(a.x, a.y, a.x + nx * r, a.y + ny * r, a.x - nx * r, a.y - ny * r));
+}
+
+// A slot's arc centres and radius from the clicks of each slot tool:
+// centre to centre (c0, c1 = centres), overall (c0, c1 = ends), centre
+// point (c0 = middle, c1 = one centre); w = the width click.
+bool slotGeometry(M mode, P2 c0, P2 c1, P2 w, const double* typedWidth, P2& a, P2& b, double& r) {
+  P2 x0 = c0, x1 = c1;
+  if (mode == M::SlotCentre) x0 = {2 * c0.x - c1.x, 2 * c0.y - c1.y};
+  const double dx = x1.x - x0.x, dy = x1.y - x0.y, len = std::hypot(dx, dy);
+  if (len < 1e-9) return false;
+  const double ux = dx / len, uy = dy / len;
+  r = typedWidth ? *typedWidth / 2 : std::abs((w.x - x0.x) * -uy + (w.y - x0.y) * ux);
+  if (r < 1e-9) return false;
+  a = x0, b = x1;
+  if (mode == M::SlotOverall) {
+    if (2 * r >= len) return false;  // wider than it is long
+    a = {x0.x + ux * r, x0.y + uy * r};
+    b = {x1.x - ux * r, x1.y - uy * r};
+  }
+  return true;
+}
+
+// A regular polygon's centre, corner radius and first-corner angle from the
+// clicks of each polygon tool. Edge polygons: c0, c1 = a side, w = the side
+// it goes on (ccw = the side runs counter-clockwise around the centre).
+bool polygonGeometry(M mode, P2 c0, P2 c1, P2 w, int n, const double* typed, P2& centre, double& R, double& a0,
+                     bool& ccw) {
+  ccw = true;
+  if (mode == M::PolygonEdge) {
+    const double dx = c1.x - c0.x, dy = c1.y - c0.y, side = std::hypot(dx, dy);
+    if (side < 1e-9) return false;
+    const double nx = -dy / side, ny = dx / side;
+    ccw = (w.x - c0.x) * nx + (w.y - c0.y) * ny >= 0;
+    const double k = (ccw ? 1 : -1) * (side / 2) / std::tan(kPi / n);
+    centre = {(c0.x + c1.x) / 2 + nx * k, (c0.y + c1.y) / 2 + ny * k};
+    R = side / (2 * std::sin(kPi / n));
+    a0 = std::atan2(c0.y - centre.y, c0.x - centre.x);
+    return true;
+  }
+  centre = c0;
+  double d = typed ? *typed : dist(c0.x, c0.y, c1.x, c1.y);
+  if (d < 1e-9) return false;
+  a0 = std::atan2(c1.y - c0.y, c1.x - c0.x);
+  if (mode == M::PolygonCirc) {  // the click is the middle of a side
+    R = d / std::cos(kPi / n);
+    a0 += kPi / n;
+  } else {
+    R = d;
+  }
   return true;
 }
 
@@ -249,6 +314,7 @@ void SketchEditor::clickShape(const Hit& hIn, const Typed& typed) {
         if (typed.set[0] && ls.size() > 0) addConstraint(K::Length, ls[0], 0, 0, typed.value[0], true);
         if (typed.set[1] && ls.size() > 1) addConstraint(K::Length, ls[1], 0, 0, typed.value[1], true);
         markNew(ls);
+        if (roundCorners_) roundRectangle(ls, 2 * hx, 2 * hy);
         return true;
       });
       break;
@@ -336,30 +402,66 @@ void SketchEditor::clickShape(const Hit& hIn, const Typed& typed) {
       }
       break;
     }
-    case Mode::Polygon: {
-      const int n = typed.set[1] ? int(typed.value[1]) : polygonSides_;
-      const double r = dist(first.u, first.v, h.u, h.v);
-      if (r < tol || n < 3) return;
+    case Mode::Polygon:
+    case Mode::PolygonCirc:
+    case Mode::PolygonEdge: {
+      const bool edge = mode_ == Mode::PolygonEdge;
+      const int n = (!edge && typed.set[1]) ? int(typed.value[1]) : polygonSides_;
+      if (n < 3) return;
+      const P2 p1 = edge ? P2{c[1].u, c[1].v} : P2{h.u, h.v};
+      P2 centre;
+      double R, a0;
+      bool ccw;
+      if (!polygonGeometry(mode_, {first.u, first.v}, p1, {h.u, h.v}, n, (!edge && typed.set[0]) ? &typed.value[0] : nullptr,
+                           centre, R, a0, ccw) ||
+          R < tol)
+        return;
       polygonSides_ = n;
-      const double a0 = std::atan2(h.v - first.v, h.u - first.u);
       done = edit([&] {
-        const std::uint64_t centre = resolve(first);
-        const std::uint64_t ring = model::sketch_add_circle(tl(), sketch_, centre, r);
+        const std::uint64_t cp =
+            edge ? model::sketch_add_point(tl(), sketch_, centre.x, centre.y) : resolve(first);
+        const std::uint64_t ring = model::sketch_add_circle(tl(), sketch_, cp, R);
         model::sketch_set_construction(tl(), sketch_, ring, true);
         std::vector<std::uint64_t> pts, lines;
         for (int i = 0; i < n; ++i) {
-          if (i == 0 && h.kind == Hit::Point) {
-            pts.push_back(resolve(h));
+          // Corners that were clicked keep their points.
+          const Hit* clicked = nullptr;
+          if (edge && i == 0) clicked = &c[0];
+          if (edge && i == (ccw ? 1 : n - 1)) clicked = &c[1];
+          if (mode_ == Mode::Polygon && i == 0 && h.kind == Hit::Point) clicked = &h;
+          if (clicked) {
+            pts.push_back(resolve(*clicked));
           } else {
-            const double a = a0 + 2 * kPi * i / n;
-            pts.push_back(model::sketch_add_point(tl(), sketch_, first.u + r * std::cos(a), first.v + r * std::sin(a)));
+            const double a = a0 + 2 * kPi * i / n * (ccw ? 1 : -1);
+            pts.push_back(model::sketch_add_point(tl(), sketch_, centre.x + R * std::cos(a), centre.y + R * std::sin(a)));
           }
           addConstraint(K::PointOnCurve, pts.back(), ring, 0, 0, true);
         }
         for (int i = 0; i < n; ++i) lines.push_back(model::sketch_add_line(tl(), sketch_, pts[i], pts[(i + 1) % n]));
         for (int i = 1; i < n; ++i) addConstraint(K::Equal, lines[0], lines[i], 0, 0, true);
-        if (typed.set[0]) addConstraint(K::Radius, ring, 0, 0, typed.value[0], true);
+        if (mode_ == Mode::Polygon && typed.set[0]) addConstraint(K::Radius, ring, 0, 0, typed.value[0], true);
         markNew(lines);
+        return true;
+      });
+      break;
+    }
+    case Mode::MidLine: {
+      double ex = h.u, ey = h.v;
+      if (typed.set[0]) {
+        const double d = std::max(dist(first.u, first.v, h.u, h.v), 1e-12);
+        ex = first.u + (h.u - first.u) / d * typed.value[0] / 2;
+        ey = first.v + (h.v - first.v) / d * typed.value[0] / 2;
+      }
+      if (dist(first.u, first.v, ex, ey) < tol / 2) return;
+      done = edit([&] {
+        Hit end = h;
+        if (typed.set[0]) end.kind = Hit::None, end.u = ex, end.v = ey;
+        const std::uint64_t pe = resolve(end);
+        const std::uint64_t po = model::sketch_add_point(tl(), sketch_, 2 * first.u - ex, 2 * first.v - ey);
+        const std::uint64_t line = model::sketch_add_line(tl(), sketch_, po, pe);
+        addConstraint(K::Midpoint, resolve(first), line, 0, 0, true);
+        if (typed.set[0]) addConstraint(K::Length, line, 0, 0, typed.value[0], true);
+        markNew({line});
         return true;
       });
       break;
@@ -381,18 +483,27 @@ void SketchEditor::clickShape(const Hit& hIn, const Typed& typed) {
       });
       break;
     }
-    case Mode::Slot: {
-      const Hit c2 = c[1];
-      const double dx = c2.u - first.u, dy = c2.v - first.v, len = std::hypot(dx, dy);
-      if (len < tol) return;
+    case Mode::Slot:
+    case Mode::SlotOverall:
+    case Mode::SlotCentre: {
+      P2 ca, cb;
+      double r;
+      if (!slotGeometry(mode_, {first.u, first.v}, {c[1].u, c[1].v}, {h.u, h.v}, typed.set[0] ? &typed.value[0] : nullptr,
+                        ca, cb, r) ||
+          r < tol / 2) {
+        emit message(tr("Give the slot some width, less than its length."));
+        return;
+      }
+      const double dx = cb.x - ca.x, dy = cb.y - ca.y, len = std::hypot(dx, dy);
       const double nx = -dy / len, ny = dx / len;
-      const double r = typed.set[0] ? typed.value[0] / 2 : std::abs((h.u - first.u) * nx + (h.v - first.v) * ny);
-      if (r < tol / 2) return;
+      const Mode m = mode_;
       done = edit([&] {
-        const std::uint64_t p1 = resolve(first), p2 = resolve(c2);
         auto pt = [&](double x, double y) { return model::sketch_add_point(tl(), sketch_, x, y); };
-        const std::uint64_t a1 = pt(first.u + nx * r, first.v + ny * r), a2 = pt(c2.u + nx * r, c2.v + ny * r);
-        const std::uint64_t b1 = pt(first.u - nx * r, first.v - ny * r), b2 = pt(c2.u - nx * r, c2.v - ny * r);
+        // Arc centres: the clicked points where the clicks were the centres.
+        const std::uint64_t p1 = m == Mode::Slot ? resolve(first) : pt(ca.x, ca.y);
+        const std::uint64_t p2 = m == Mode::SlotOverall ? pt(cb.x, cb.y) : resolve(c[1]);
+        const std::uint64_t a1 = pt(ca.x + nx * r, ca.y + ny * r), a2 = pt(cb.x + nx * r, cb.y + ny * r);
+        const std::uint64_t b1 = pt(ca.x - nx * r, ca.y - ny * r), b2 = pt(cb.x - nx * r, cb.y - ny * r);
         const std::uint64_t top = model::sketch_add_line(tl(), sketch_, a1, a2);
         const std::uint64_t bottom = model::sketch_add_line(tl(), sketch_, b2, b1);
         const std::uint64_t end2 = model::sketch_add_arc(tl(), sketch_, p2, b2, a2);
@@ -400,6 +511,12 @@ void SketchEditor::clickShape(const Hit& hIn, const Typed& typed) {
         for (std::uint64_t l : {top, bottom})
           for (std::uint64_t arc : {end1, end2}) addConstraint(K::Tangent, l, arc, 0, 0, true);
         addConstraint(K::Equal, end1, end2, 0, 0, true);
+        if (m == Mode::SlotCentre) {
+          // The centre click sits in the middle of a construction centre line.
+          const std::uint64_t axis = model::sketch_add_line(tl(), sketch_, p1, p2);
+          model::sketch_set_construction(tl(), sketch_, axis, true);
+          addConstraint(K::Midpoint, resolve(first), axis, 0, 0, true);
+        }
         if (typed.set[0]) addConstraint(K::Radius, end1, 0, 0, r, true);
         markNew({top, bottom, end1, end2});
         return true;
@@ -496,20 +613,40 @@ void SketchEditor::previewShape(const Hit& a, double cu, double cv, std::vector<
       segs.push_back(ccw ? arcSeg(centre.x, centre.y, a.u, a.v, cu, cv) : arcSeg(centre.x, centre.y, cu, cv, a.u, a.v));
       break;
     }
-    case Mode::Polygon: {
+    case Mode::Polygon:
+    case Mode::PolygonCirc:
+    case Mode::PolygonEdge: {
+      const bool edge = mode_ == Mode::PolygonEdge;
+      if (edge && n == 1) {
+        segs.push_back(lineSeg(a.u, a.v, cu, cv));
+        break;
+      }
+      Typed t;
       Hit c;
       c.u = cu, c.v = cv;
-      Typed t;
-      c = typedTarget(a, c, t);
-      const int sides = t.set[1] ? int(t.value[1]) : polygonSides_;
-      const double r = dist(a.u, a.v, c.u, c.v), a0 = std::atan2(c.v - a.v, c.u - a.u);
-      live[0] = r, live[1] = sides;
-      if (r < 1e-9) break;
+      if (!edge) c = typedTarget(a, c, t);
+      const int sides = (!edge && t.set[1]) ? int(t.value[1]) : polygonSides_;
+      const P2 p1 = edge ? P2{clicks_[1].u, clicks_[1].v} : P2{c.u, c.v};
+      P2 centre;
+      double R, a0;
+      bool ccw;
+      live[0] = dist(a.u, a.v, c.u, c.v), live[1] = sides;
+      if (!polygonGeometry(mode_, {a.u, a.v}, p1, {cu, cv}, sides, nullptr, centre, R, a0, ccw)) break;
       for (int i = 0; i < sides; ++i) {
         const double t0 = a0 + 2 * kPi * i / sides, t1 = a0 + 2 * kPi * (i + 1) / sides;
-        segs.push_back(lineSeg(a.u + r * std::cos(t0), a.v + r * std::sin(t0), a.u + r * std::cos(t1),
-                               a.v + r * std::sin(t1)));
+        segs.push_back(lineSeg(centre.x + R * std::cos(t0), centre.y + R * std::sin(t0), centre.x + R * std::cos(t1),
+                               centre.y + R * std::sin(t1)));
       }
+      break;
+    }
+    case Mode::MidLine: {
+      double ex = cu, ey = cv;
+      if (double l; typedValue(0, l)) {
+        const double d = std::max(dist(a.u, a.v, cu, cv), 1e-12);
+        ex = a.u + (cu - a.u) / d * l / 2, ey = a.v + (cv - a.v) / d * l / 2;
+      }
+      segs.push_back(lineSeg(2 * a.u - ex, 2 * a.v - ey, ex, ey));
+      live[0] = 2 * dist(a.u, a.v, ex, ey);
       break;
     }
     case Mode::Ellipse: {
@@ -531,23 +668,22 @@ void SketchEditor::previewShape(const Hit& a, double cu, double cv, std::vector<
       segs.push_back(s);
       break;
     }
-    case Mode::Slot: {
+    case Mode::Slot:
+    case Mode::SlotOverall:
+    case Mode::SlotCentre: {
       if (n == 1) {
-        segs.push_back(lineSeg(a.u, a.v, cu, cv));
+        if (mode_ == Mode::SlotCentre) segs.push_back(lineSeg(2 * a.u - cu, 2 * a.v - cv, cu, cv));
+        else segs.push_back(lineSeg(a.u, a.v, cu, cv));
         break;
       }
-      const Hit& b = clicks_[1];
-      const double dx = b.u - a.u, dy = b.v - a.v, len = std::hypot(dx, dy);
-      if (len < 1e-9) break;
-      const double nx = -dy / len, ny = dx / len;
-      double r = std::abs((cu - a.u) * nx + (cv - a.v) * ny);
-      if (double w; typedValue(0, w)) r = w / 2;
+      double w;
+      const bool typedW = typedValue(0, w);
+      P2 ca, cb;
+      double r;
+      if (!slotGeometry(mode_, {a.u, a.v}, {clicks_[1].u, clicks_[1].v}, {cu, cv}, typedW ? &w : nullptr, ca, cb, r))
+        break;
       live[0] = 2 * r;
-      if (r < 1e-9) break;
-      segs.push_back(lineSeg(a.u + nx * r, a.v + ny * r, b.u + nx * r, b.v + ny * r));
-      segs.push_back(lineSeg(b.u - nx * r, b.v - ny * r, a.u - nx * r, a.v - ny * r));
-      segs.push_back(arcSeg(b.u, b.v, b.u - nx * r, b.v - ny * r, b.u + nx * r, b.v + ny * r));
-      segs.push_back(arcSeg(a.u, a.v, a.u + nx * r, a.v + ny * r, a.u - nx * r, a.v - ny * r));
+      slotOutline(ca, cb, r, segs);
       break;
     }
     case Mode::Spline: {
