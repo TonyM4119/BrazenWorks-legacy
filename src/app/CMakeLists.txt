@@ -61,6 +61,27 @@ set_target_properties(app PROPERTIES
   MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}"
   MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}")
 
+# Windows: copy the Qt DLLs and plugins next to the exe after each build, so it
+# starts from Explorer too (msvc.cmd only puts Qt on PATH inside its own window).
+if(WIN32)
+  set(_qt_bin_hints "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_BINS}")
+  if(TARGET Qt6::qmake)
+    get_target_property(_qmake Qt6::qmake IMPORTED_LOCATION)
+    get_filename_component(_qmake_dir "${_qmake}" DIRECTORY)
+    list(APPEND _qt_bin_hints "${_qmake_dir}")
+  endif()
+  find_program(WINDEPLOYQT_EXECUTABLE windeployqt HINTS ${_qt_bin_hints} NO_DEFAULT_PATH)
+  if(WINDEPLOYQT_EXECUTABLE)
+    add_custom_command(TARGET app POST_BUILD
+      COMMAND "${WINDEPLOYQT_EXECUTABLE}" --verbose 0 --no-translations --no-compiler-runtime
+              --no-system-d3d-compiler --no-opengl-sw "$<TARGET_FILE:app>"
+      COMMENT "Copying Qt next to $<TARGET_FILE_NAME:app>"
+      VERBATIM)
+  else()
+    message(WARNING "windeployqt not found: run the app through tools/dev-env/msvc.cmd")
+  endif()
+endif()
+
 # ---- Install / packaging -----------------------------------------------------
 include(GNUInstallDirs)
 install(TARGETS app
