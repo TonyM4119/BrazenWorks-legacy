@@ -1,11 +1,14 @@
 #include "Viewport.h"
 
+#include "Kernel.h"
+
 #include <AIS_AnimationCamera.hxx>
 #include <AIS_MouseGesture.hxx>
 #include <AIS_TextLabel.hxx>
 #include <Font_NameOfFont.hxx>
 #include <Aspect_DisplayConnection.hxx>
 #include <Aspect_Grid.hxx>
+#include <gp_Ax3.hxx>
 #include <Aspect_NeutralWindow.hxx>
 #include <Aspect_ScrollDelta.hxx>
 #include <Aspect_VKeyFlags.hxx>
@@ -277,6 +280,13 @@ void Viewport::setGridVisible(bool visible) {
     viewer_->DeactivateGrid();
   }
   view_->Invalidate();
+  update();
+}
+
+void Viewport::setGridPlane(const geom::Plane& p) {
+  const gp_Ax3 ax(gp_Pnt(p.origin[0], p.origin[1], p.origin[2]), gp_Dir(p.normal[0], p.normal[1], p.normal[2]),
+                  gp_Dir(p.xAxis[0], p.xAxis[1], p.xAxis[2]));
+  viewer_->SetPrivilegedPlane(ax);
   update();
 }
 

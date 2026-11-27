@@ -379,11 +379,18 @@ void MainWindow::layoutOverlays(bool animate) {
   // Sketch Palette: right side, under the view cube.
   if (sketchPanel_) {
     constexpr int kTop = 196;
-    const int wanted = sketchPanel_->isCollapsed() ? sketchPanel_->sizeHint().height()
-                                                   : sketchPanel_->property("contentHeight").toInt() + 48;
+    // The user's size if they dragged one; else as wide as the default and
+    // tall enough for everything, so nothing needs scrolling.
+    const QSize user = prefs::get(prefs::kPaletteSize).toSize();
+    const int width = std::clamp(user.width() > 0 ? user.width() : 330, 240, std::max(240, w - 2 * kMargin));
+    int wanted = sketchPanel_->sizeHint().height();
+    if (!sketchPanel_->isCollapsed()) {
+      const auto* palette = sketchPanel_->findChild<SketchPalette*>();
+      const int content = palette ? palette->heightForWidth(width - 8) : 400;
+      wanted = user.height() > 0 ? user.height() : content + 44;
+    }
     const int height = std::min(wanted, h - kTop - 70);
-    sketchPanel_->setGeometry(w - sketchPanel_->sizeHint().width() - kMargin, kTop,
-                              sketchPanel_->sizeHint().width(), std::max(height, 40));
+    sketchPanel_->setGeometry(w - width - kMargin, kTop, width, std::max(height, 40));
     sketchPanel_->raise();
   }
   // Nav bar: bottom centre.
@@ -951,11 +958,25 @@ void MainWindow::enterSketch(std::uint64_t sketch) {
   scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
   scroll->setWidgetResizable(true);
   scroll->setWidget(palette);
-  scroll->setFixedWidth(palette->width() + 10);
-  scroll->setMinimumHeight(120);
-  sketchPanel_->setProperty("contentHeight", palette->sizeHint().height());
+  scroll->setMinimumHeight(80);
   sketchPanel_->setContent(scroll);
   sketchPanel_->setCollapsible(true);
+  sketchPanel_->setResizable(true);
+  connect(sketchPanel_, &FloatingPanel::resizedByUser, this, [](QSize size) {
+    QSize stored = prefs::get(prefs::kPaletteSize).toSize();
+    if (!stored.isValid()) stored = QSize(-1, -1);
+    if (size.width() > 0) stored.setWidth(size.width());
+    if (size.height() > 0) stored.setHeight(size.height());
+    prefs::set(prefs::kPaletteSize, stored);
+  });
+  connect(sketchPanel_, &FloatingPanel::sizeResetByUser, this, [this] {
+    prefs::set(prefs::kPaletteSize, QSize());
+    layoutOverlays();
+  });
+  connect(palette, &SketchPalette::contentChanged, this, [this] {
+    // A section opened or closed: refit, unless the user set a height.
+    QTimer::singleShot(0, this, [this] { layoutOverlays(); });
+  });
   sketchPanel_->applyShadow();
   connect(palette, &SketchPalette::toolRequested, this, &MainWindow::onSketchTool);
   connect(palette, &SketchPalette::finishRequested, this, [this] { QTimer::singleShot(0, this, &MainWindow::finishSketch); });

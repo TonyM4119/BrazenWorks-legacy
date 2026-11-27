@@ -3,11 +3,68 @@
 #include "Icons.h"
 #include "Theme.h"
 
+#include <algorithm>
+
 #include <QGraphicsDropShadowEffect>
+#include <QMouseEvent>
+#include <QPainter>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QToolButton>
 #include <QVBoxLayout>
+
+namespace {
+
+// A strip or corner that resizes its panel by dragging.
+class Grip : public QWidget {
+ public:
+  Grip(FloatingPanel* panel, Qt::Edges edges) : QWidget(panel), panel_(panel), edges_(edges) {
+    setCursor(edges == (Qt::LeftEdge | Qt::BottomEdge) ? Qt::SizeBDiagCursor
+              : edges == Qt::LeftEdge                  ? Qt::SizeHorCursor
+                                                       : Qt::SizeVerCursor);
+    setToolTip(edges == (Qt::LeftEdge | Qt::BottomEdge)
+                   ? FloatingPanel::tr("Drag to resize; double-click to fit the contents again")
+                   : QString());
+  }
+
+ protected:
+  void mousePressEvent(QMouseEvent* e) override {
+    if (e->button() != Qt::LeftButton) return;
+    start_ = e->globalPosition().toPoint();
+    geom_ = panel_->geometry();
+  }
+  void mouseMoveEvent(QMouseEvent* e) override {
+    if (!(e->buttons() & Qt::LeftButton)) return;
+    const QPoint d = e->globalPosition().toPoint() - start_;
+    QRect g = geom_;
+    const int maxW = panel_->parentWidget() ? panel_->parentWidget()->width() - 16 : 2000;
+    const int maxH = panel_->parentWidget() ? panel_->parentWidget()->height() - g.top() - 8 : 2000;
+    if (edges_ & Qt::LeftEdge) g.setLeft(geom_.right() + 1 - std::clamp(geom_.width() - d.x(), 240, maxW));
+    if (edges_ & Qt::BottomEdge) g.setHeight(std::clamp(geom_.height() + d.y(), 120, std::max(maxH, 120)));
+    panel_->setGeometry(g);
+    // Only what this handle changes: -1 leaves the other size as it was.
+    emit panel_->resizedByUser(QSize(edges_ & Qt::LeftEdge ? g.width() : -1,
+                                     edges_ & Qt::BottomEdge ? g.height() : -1));
+  }
+  void mouseDoubleClickEvent(QMouseEvent*) override { emit panel_->sizeResetByUser(); }
+  void paintEvent(QPaintEvent*) override {
+    if (edges_ != (Qt::LeftEdge | Qt::BottomEdge)) return;
+    // Three dots along the corner, like a window's size grip.
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(Qt::NoPen);
+    p.setBrush(theme::current().textMuted);
+    for (auto [x, y] : {std::pair{3, 4}, std::pair{3, 9}, std::pair{8, 9}}) p.drawEllipse(QPointF(x, y), 1.3, 1.3);
+  }
+
+ private:
+  FloatingPanel* panel_;
+  Qt::Edges edges_;
+  QPoint start_;
+  QRect geom_;
+};
+
+}  // namespace
 
 FloatingPanel::FloatingPanel(const QString& title, QWidget* parent) : QFrame(parent) {
   setObjectName("FloatingPanel");
@@ -82,4 +139,26 @@ void FloatingPanel::setCollapsed(bool collapsed) {
   collapse_->setToolTip(collapsed ? tr("Expand") : tr("Collapse"));
   adjustSize();
   emit collapsedChanged(collapsed);
+}
+
+void FloatingPanel::setResizable(bool on) {
+  if (on && !grips_[0]) {
+    grips_[0] = new Grip(this, Qt::LeftEdge);
+    grips_[1] = new Grip(this, Qt::BottomEdge);
+    grips_[2] = new Grip(this, Qt::LeftEdge | Qt::BottomEdge);
+  }
+  for (QWidget* g : grips_)
+    if (g) g->setVisible(on);
+  QResizeEvent e(size(), size());
+  resizeEvent(&e);
+}
+
+void FloatingPanel::resizeEvent(QResizeEvent* e) {
+  QFrame::resizeEvent(e);
+  if (!grips_[0]) return;
+  const int w = width(), h = height();
+  grips_[0]->setGeometry(0, 0, 5, h);
+  grips_[1]->setGeometry(0, h - 5, w, 5);
+  grips_[2]->setGeometry(0, h - 13, 13, 13);
+  for (QWidget* g : grips_) g->raise();
 }

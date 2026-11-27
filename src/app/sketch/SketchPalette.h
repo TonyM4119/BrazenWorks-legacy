@@ -8,6 +8,7 @@
 class QCheckBox;
 class QLabel;
 class QToolButton;
+class QVBoxLayout;
 
 // The panel on the right while a sketch is open (as in MitCAD and Fusion):
 // degrees of freedom, display settings, the create and constraint tools, the
@@ -22,11 +23,14 @@ class SketchPalette : public QWidget {
   void lookAtRequested();
   void finishRequested();
   void cancelRequested();
+  void contentChanged();  // a section opened or closed: the panel refits
 
  private:
   void updateSolve(int dof, bool conflicting);
   void updateMode();
   QToolButton* toolButton(const QString& id, const QString& icon, const QString& tip);
+  // A heading that folds its section away (remembered between sessions).
+  QVBoxLayout* section(QVBoxLayout* col, const QString& key, const QString& title);
 
   SketchEditor* editor_;
   QLabel* dof_ = nullptr;

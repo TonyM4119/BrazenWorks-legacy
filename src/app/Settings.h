@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QSettings>
+#include <QSize>
 #include <QString>
 #include <QVariant>
 
@@ -31,6 +32,8 @@ inline const Key kSnap{"sketch/snap", true};
 inline const Key kInference{"sketch/inference", true};
 inline const Key kConstraintTags{"sketch/constraintTags", true};
 inline const Key kPickRadius{"sketch/pickRadius", 9};
+// Window state (not shown in Preferences)
+inline const Key kPaletteSize{"sketch/paletteSize", QSize()};  // invalid: fit the content
 
 inline QVariant get(const Key& k) { return QSettings().value(k.name, k.fallback); }
 inline bool flag(const Key& k) { return get(k).toBool(); }
