@@ -52,7 +52,9 @@ tools\dev-env\msvc.cmd build\dev\brazenworks.exe
 ```
 
 Options: `-VcpkgRoot` (default `C:\vcpkg`, keep it short), `-QtRoot` (default
-`C:\Qt`), `-QtVersion` (default `6.8.3`). The script is safe to re-run. The app
+`C:\Qt`), `-QtVersion` (default `6.8.3`). The script is safe to re-run. Each build
+copies Qt next to the exe (windeployqt), so `build\dev\brazenworks.exe` also starts
+with a double-click. The app
 needs OpenGL 2.1 or newer, which any GPU from the last decade has.
 
 ### Linux (Ubuntu 24.04 / Debian)
