@@ -4,8 +4,11 @@
 #include "Icons.h"
 #include "Kernel.h"
 #include "Theme.h"
+#include "Settings.h"
 #include "Viewport.h"
+#include "widgets/PreferencesDialog.h"
 #include "sketch/Pickers.h"
+#include "sketch/SketchPalette.h"
 #include "widgets/Animations.h"
 #include "widgets/CommandDialog.h"
 #include "widgets/DocumentBar.h"
@@ -25,8 +28,22 @@
 #include <QEvent>
 #include <QFileDialog>
 #include <QHeaderView>
+#include <QApplication>
+#include <QClipboard>
+#include <QDesktopServices>
+#include <QDialog>
+#include <QDir>
+#include <QPushButton>
+#include <QScrollArea>
+#include <QSysInfo>
+#include <QTableWidget>
+#include <QUrl>
+#include <QVBoxLayout>
 #include <QComboBox>
 #include <QKeySequence>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QGuiApplication>
 #include <QLabel>
 #include <QMenu>
 #include <QMessageBox>
@@ -86,7 +103,7 @@ QVector<Ribbon::Workspace> workspaces() {
              T{"cam.slot", "Slot", "slot", kCamTip}, T{"cam.engrave", "Engrave", "engrave", kCamTip}}},
           G{"3D",
             {T{"cam.adaptive", "Adaptive Clearing", "adaptive", kCamTip},
-             T{"cam.parallel", "Parallel", "parallel", kCamTip}, T{"cam.scallop", "Scallop", "scallop", kCamTip}}},
+             T{"cam.parallel", "Parallel", "cam-parallel", kCamTip}, T{"cam.scallop", "Scallop", "scallop", kCamTip}}},
           G{"DRILLING", {T{"cam.drill", "Drill", "drill", kCamTip}}},
           G{"ACTIONS",
             {T{"cam.simulate", "Simulate", "simulate", kCamTip}, T{"cam.post", "Post Process", "post", kCamTip}}},
@@ -188,7 +205,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   column->setSpacing(0);
 
   documentBar_ = new DocumentBar(central);
-  connect(documentBar_, &DocumentBar::helpRequested, this, &MainWindow::showAbout);
+  connect(documentBar_, &DocumentBar::preferencesRequested, this, &MainWindow::openPreferences);
+  connect(documentBar_, &DocumentBar::undoRequested, this, [this] { undo(); });
+  connect(documentBar_, &DocumentBar::redoRequested, this, [this] { redo(); });
   column->addWidget(documentBar_);
 
   ribbon_ = new Ribbon(central);
@@ -244,7 +263,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
   addAction(redoAction);
 
   buildAppMenu();
+  buildHelpMenu();
   loadDemoDocument();
+  applyPreferences();
   resize(1440, 900);
 }
 
@@ -281,29 +302,21 @@ void MainWindow::buildBrowser() {
 
   browser_ = new QTreeWidget(browserPanel_);
   browser_->setObjectName("Browser");
-  browser_->setColumnCount(2);
+  browser_->setColumnCount(1);
   browser_->setHeaderHidden(true);
   browser_->setIndentation(14);
   browser_->setRootIsDecorated(true);
-  browser_->setIconSize(QSize(theme::kSmallIconSize, theme::kSmallIconSize));
-  browser_->header()->setStretchLastSection(false);
-  browser_->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-  browser_->header()->setSectionResizeMode(1, QHeaderView::Fixed);
-  browser_->header()->resizeSection(1, 24);
+  // Each row's icon is [eye][type icon], like Fusion's browser.
+  browser_->setIconSize(QSize(2 * theme::kSmallIconSize + 6, theme::kSmallIconSize));
   browser_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
   browser_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-  connect(browser_, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int column) {
+  browser_->viewport()->installEventFilter(this);
+  connect(browser_, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int) {
     if (item->data(0, kUnitsRole).toBool()) {
       QMenu menu;
       fillUnitsMenu(&menu);
       menu.exec(QCursor::pos());
-      return;
     }
-    if (column != 1 || !item->data(1, kVisibilityRole).isValid()) return;
-    const bool visible = !item->data(1, kVisibilityRole).toBool();
-    item->setData(1, kVisibilityRole, visible);
-    item->setIcon(1, icons::get(visible ? "eye" : "eye-off", theme::kSmallIconSize));
-    viewport_->setBodyVisible(visible);
   });
   browserPanel_->setContent(browser_);
   connect(browserPanel_, &FloatingPanel::collapsedChanged, this, [this] { layoutOverlays(true); });
@@ -312,6 +325,17 @@ void MainWindow::buildBrowser() {
 }
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event) {
+  if (browser_ && watched == browser_->viewport() && event->type() == QEvent::MouseButtonPress) {
+    const QPoint pos = static_cast<QMouseEvent*>(event)->position().toPoint();
+    if (QTreeWidgetItem* item = browser_->itemAt(pos)) {
+      const QRect r = browser_->visualItemRect(item);
+      // The eye is the first ~20 px of the row's icon.
+      if (item->data(0, kVisibilityRole).isValid() && pos.x() >= r.left() && pos.x() < r.left() + 22) {
+        toggleBrowserVisibility(item);
+        return true;
+      }
+    }
+  }
   if (watched == viewport_ && (event->type() == QEvent::Resize || event->type() == QEvent::Show)) {
     layoutOverlays();
   }
@@ -351,6 +375,16 @@ void MainWindow::layoutOverlays(bool animate) {
     dialog_->adjustSize();
     if (!dialog_->property("animating").toBool()) dialog_->move(dialogPosition());
     dialog_->raise();
+  }
+  // Sketch Palette: right side, under the view cube.
+  if (sketchPanel_) {
+    constexpr int kTop = 196;
+    const int wanted = sketchPanel_->isCollapsed() ? sketchPanel_->sizeHint().height()
+                                                   : sketchPanel_->property("contentHeight").toInt() + 48;
+    const int height = std::min(wanted, h - kTop - 70);
+    sketchPanel_->setGeometry(w - sketchPanel_->sizeHint().width() - kMargin, kTop,
+                              sketchPanel_->sizeHint().width(), std::max(height, 40));
+    sketchPanel_->raise();
   }
   // Nav bar: bottom centre.
   if (navBar_) {
@@ -573,43 +607,119 @@ void MainWindow::refreshTimeline() {
   timelineBar_->setFeatures(chips, int(model::timeline_marker(*timeline_)));
 }
 
-void MainWindow::refreshBrowser() {
-  const bool bodyVisible = [this] {
-    for (QTreeWidgetItemIterator it(browser_); *it; ++it) {
-      if ((*it)->data(1, kVisibilityRole).isValid()) return (*it)->data(1, kVisibilityRole).toBool();
-    }
-    return true;
-  }();
+namespace {
 
+enum class Eye { None, Shown, Hidden };
+
+// [eye][gap][type icon] as one pixmap so rows line up like Fusion's browser.
+QIcon browserIcon(const QString& type, Eye eye) {
+  const int s = theme::kSmallIconSize;
+  const qreal dpr = qGuiApp->devicePixelRatio();
+  QPixmap pm(QSize(2 * s + 6, s) * dpr);
+  pm.setDevicePixelRatio(dpr);
+  pm.fill(Qt::transparent);
+  QPainter p(&pm);
+  if (eye != Eye::None) {
+    const QColor c = eye == Eye::Shown ? theme::current().text : theme::current().textDisabled;
+    p.drawPixmap(0, 0, icons::tinted(eye == Eye::Shown ? "eye" : "eye-off", c, s).pixmap(s, s));
+  }
+  const QIcon typeIcon = icons::get(type, s);
+  p.drawPixmap(s + 6, 0, typeIcon.pixmap(s, s, eye == Eye::Hidden ? QIcon::Disabled : QIcon::Normal));
+  p.end();
+  return QIcon(pm);
+}
+
+}  // namespace
+
+bool MainWindow::sketchVisible(std::uint64_t id) const {
+  if (!sketchesShown_) return false;
+  if (auto it = sketchVisibility_.constFind(id); it != sketchVisibility_.cend()) return *it;
+  // Used sketches hide, as in Fusion, unless Preferences says otherwise.
+  return prefs::flag(prefs::kShowUsedSketches) || !model::timeline_sketch_consumed(*timeline_, id);
+}
+
+void MainWindow::toggleBrowserVisibility(QTreeWidgetItem* item) {
+  const QString what = item->data(0, kVisibilityRole).toString();
+  if (what == "body" || what == "bodies") {
+    viewport_->setBodyVisible(!viewport_->bodyVisible());
+  } else if (what == "sketches") {
+    sketchesShown_ = !sketchesShown_;
+  } else if (what == "origin") {
+    originShown_ = !originShown_;
+    showOrigin();
+  } else if (what == "sketch") {
+    const std::uint64_t id = item->data(0, kFeatureRole).toULongLong();
+    const bool visible = sketchVisible(id);
+    sketchVisibility_[id] = !visible;
+    if (!sketchesShown_ && !visible) sketchesShown_ = true;
+  }
+  showSketches();
+  QTimer::singleShot(0, this, &MainWindow::refreshBrowser);  // not while handling the click
+}
+
+void MainWindow::showOrigin() {
+  if (!originShown_) {
+    viewport_->clearOverlay("origin");
+    return;
+  }
+  const double h = 1.5 * kInch;
+  Overlay o;
+  const QColor planeColor(240, 160, 75);
+  for (int i = 0; i < 3; ++i) {
+    geom::Plane p;
+    if (i == 1) p.yAxis = {0, 0, 1}, p.normal = {0, -1, 0};
+    if (i == 2) p.xAxis = {0, 1, 0}, p.yAxis = {0, 0, 1}, p.normal = {1, 0, 0};
+    o.faces.push_back({geom::makePolygonFace(p, {{{0, 0}, {h, 0}, {h, h}, {0, h}}}), planeColor, 0.85});
+  }
+  auto axis = [&](geom::Plane p, const QColor& c) {
+    geom::Seg2 s;
+    s.x0 = 0, s.y0 = 0, s.x1 = 2.2 * kInch, s.y1 = 0;
+    o.curves.push_back({geom::makeCurves(p, {s}), c, 2.0, false});
+  };
+  geom::Plane px, py, pz;
+  py.xAxis = {0, 1, 0}, py.yAxis = {-1, 0, 0};
+  pz.xAxis = {0, 0, 1}, pz.yAxis = {1, 0, 0}, pz.normal = {0, 1, 0};
+  axis(px, QColor(229, 72, 77));
+  axis(py, QColor(61, 187, 79));
+  axis(pz, QColor(62, 124, 240));
+  o.points.push_back({geom::makeVertices(px, {{0.0, 0.0}}), QColor(240, 240, 240), 3.0});
+  viewport_->setOverlay("origin", o);
+}
+
+void MainWindow::refreshBrowser() {
   // Rebuilding the tree expands every item; don't animate each one.
   const QSignalBlocker quiet(browser_);
   browser_->clear();
-  auto* root = new QTreeWidgetItem(browser_, {documentName_});
-  root->setIcon(0, icons::tinted("body", theme::current().accent, theme::kSmallIconSize));
-  auto add = [](QTreeWidgetItem* parent, const QString& text, const QString& icon) {
+  const bool bodyShown = viewport_->bodyVisible();
+  auto add = [](QTreeWidgetItem* parent, const QString& text, const QString& icon, Eye eye = Eye::None,
+                const QString& role = {}) {
     auto* item = new QTreeWidgetItem(parent, {text});
-    item->setIcon(0, icons::get(icon, theme::kSmallIconSize));
+    item->setIcon(0, browserIcon(icon, eye));
+    if (!role.isEmpty()) {
+      item->setData(0, kVisibilityRole, role);
+      item->setToolTip(0, QObject::tr("Click the eye to show or hide"));
+    }
     return item;
   };
+  auto* root = new QTreeWidgetItem(browser_, {documentName_});
+  root->setIcon(0, browserIcon("component", Eye::None));
   QTreeWidgetItem* settings = add(root, tr("Document Settings"), "settings");
-  QTreeWidgetItem* unitsItem = add(settings, tr("Units: %1").arg(unitName()), "measure");
+  QTreeWidgetItem* unitsItem = add(settings, tr("Units: %1").arg(unitName()), "units");
   unitsItem->setData(0, kUnitsRole, true);
   unitsItem->setToolTip(0, tr("Click to change the document units"));
-  add(root, tr("Origin"), "origin");
-  QTreeWidgetItem* sketches = add(root, tr("Sketches"), "folder");
+  add(root, tr("Origin"), "origin", originShown_ ? Eye::Shown : Eye::Hidden, "origin");
+  QTreeWidgetItem* sketches =
+      add(root, tr("Sketches"), "folder", sketchesShown_ ? Eye::Shown : Eye::Hidden, "sketches");
   for (std::size_t i = 0; i < model::timeline_marker(*timeline_); ++i) {
     if (toQString(model::timeline_feature_type(*timeline_, i)) != "Sketch") continue;
-    QTreeWidgetItem* item = add(sketches, toQString(model::timeline_feature_name(*timeline_, i)), "sketch");
-    item->setData(0, kFeatureRole, QVariant::fromValue<qulonglong>(model::timeline_feature_id(*timeline_, i)));
-    item->setToolTip(0, tr("Double-click to edit"));
+    const std::uint64_t id = model::timeline_feature_id(*timeline_, i);
+    QTreeWidgetItem* item = add(sketches, toQString(model::timeline_feature_name(*timeline_, i)), "sketch",
+                                sketchVisible(id) ? Eye::Shown : Eye::Hidden, "sketch");
+    item->setData(0, kFeatureRole, QVariant::fromValue<qulonglong>(id));
+    item->setToolTip(0, tr("Double-click to edit. Click the eye to show or hide."));
   }
-  QTreeWidgetItem* bodies = add(root, tr("Bodies"), "folder");
-  if (!body_.IsNull()) {
-    QTreeWidgetItem* body = add(bodies, tr("Body 1"), "body");
-    body->setData(1, kVisibilityRole, bodyVisible);
-    body->setIcon(1, icons::get(bodyVisible ? "eye" : "eye-off", theme::kSmallIconSize));
-    body->setToolTip(1, tr("Show / hide"));
-  }
+  QTreeWidgetItem* bodies = add(root, tr("Bodies"), "folder", bodyShown ? Eye::Shown : Eye::Hidden, "bodies");
+  if (!body_.IsNull()) add(bodies, tr("Body 1"), "body", bodyShown ? Eye::Shown : Eye::Hidden, "body");
   browser_->expandAll();
   layoutOverlays();
 }
@@ -710,7 +820,8 @@ void MainWindow::showSketches() {
   }
   const theme::Palette& pal = theme::current();
   Overlay o;
-  for (std::uint64_t id : sketchIds(/*unconsumedOnly=*/true)) {
+  for (std::uint64_t id : sketchIds(/*unconsumedOnly=*/false)) {
+    if (!sketchVisible(id)) continue;
     try {
       const geom::Plane plane = toGeomPlane(model::sketch_plane(*timeline_, id));
       o.curves.push_back({sketchCurves(*timeline_, id, plane), pal.highlight, 1.5, false});
@@ -758,6 +869,8 @@ void MainWindow::openCreateSketch() {
 
 void MainWindow::createSketch(model::OriginPlaneKind plane) {
   closeDialog();
+  sketchEntry_ = std::make_unique<rust::Box<model::Timeline>>(model::timeline_clone(*timeline_));
+  sketchUndoDepth_ = undo_.size();
   pushUndo();
   const int n = int(sketchIds(false).size()) + 1;
   const std::uint64_t id =
@@ -775,6 +888,10 @@ void MainWindow::enterSketch(std::uint64_t sketch) {
   const std::size_t index = model::timeline_index_of(*timeline_, sketch);
   if (index == SIZE_MAX) return;
 
+  if (!sketchEntry_) {
+    sketchEntry_ = std::make_unique<rust::Box<model::Timeline>>(model::timeline_clone(*timeline_));
+    sketchUndoDepth_ = undo_.size();
+  }
   // Editing an older sketch: roll the timeline back to just after it.
   sketchReturnMarker_ = -1;
   if (index + 1 < model::timeline_marker(*timeline_)) {
@@ -823,6 +940,37 @@ void MainWindow::enterSketch(std::uint64_t sketch) {
     }
     ribbon_->setActiveTool(id);
   });
+  // Sketch Palette on the right, as in MitCAD and Fusion.
+  sketchPanel_ = new FloatingPanel(
+      tr("SKETCH PALETTE · %1").arg(toQString(model::timeline_feature_name(*timeline_, index))), viewport_);
+  auto* palette = new SketchPalette(ed, sketchPanel_);
+  // Scrolls when the window is too short for the whole palette.
+  auto* scroll = new QScrollArea(sketchPanel_);
+  scroll->setObjectName("PaletteScroll");
+  scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+  scroll->setWidgetResizable(true);
+  scroll->setWidget(palette);
+  scroll->setFixedWidth(palette->width() + 10);
+  scroll->setMinimumHeight(120);
+  sketchPanel_->setProperty("contentHeight", palette->sizeHint().height());
+  sketchPanel_->setContent(scroll);
+  sketchPanel_->setCollapsible(true);
+  sketchPanel_->applyShadow();
+  connect(palette, &SketchPalette::toolRequested, this, &MainWindow::onSketchTool);
+  connect(palette, &SketchPalette::finishRequested, this, [this] { QTimer::singleShot(0, this, &MainWindow::finishSketch); });
+  connect(palette, &SketchPalette::cancelRequested, this, [this] { QTimer::singleShot(0, this, &MainWindow::cancelSketch); });
+  connect(palette, &SketchPalette::lookAtRequested, this, [this, sketch] {
+    const model::PlaneInfo p = model::sketch_plane(*timeline_, sketch);
+    viewport_->lookAlong(gp_Dir(p.normal[0], p.normal[1], p.normal[2]), gp_Dir(p.y_axis[0], p.y_axis[1], p.y_axis[2]));
+    QTimer::singleShot(450, this, [this] {
+      if (sketchEditor_) sketchEditor_->viewChanged();
+    });
+  });
+  connect(sketchPanel_, &FloatingPanel::collapsedChanged, this, [this] { layoutOverlays(); });
+  sketchPanel_->show();
+  layoutOverlays();
+
   viewport_->setTool(ed);
   viewport_->setBodyTransparency(0.75);  // see the sketch through the model
   ed->reload();  // emits the solve state with the connections in place
@@ -841,8 +989,27 @@ void MainWindow::enterSketch(std::uint64_t sketch) {
                            6000);
 }
 
+void MainWindow::cancelSketch() {
+  if (!sketchEditor_ || !sketchEntry_) return;
+  viewport_->setTool(nullptr);
+  sketchEditor_.reset();
+  timeline_ = std::move(*sketchEntry_);  // also brings back the marker
+  sketchEntry_.reset();
+  if (undo_.size() > sketchUndoDepth_) undo_.erase(undo_.begin() + long(sketchUndoDepth_), undo_.end());
+  redo_.clear();
+  sketchReturnMarker_ = -1;
+  finishSketch();
+  timelineBar_->showStatus(tr("Sketch changes discarded"));
+}
+
 void MainWindow::finishSketch() {
-  if (!sketchEditor_) return;
+  if (!sketchEditor_ && !sketchPanel_) {
+    rebuildModel();
+    return;
+  }
+  if (sketchPanel_) sketchPanel_->deleteLater();
+  sketchPanel_ = nullptr;
+  sketchEntry_.reset();
   viewport_->setTool(nullptr);
   sketchEditor_.reset();
   if (sketchReturnMarker_ >= 0) {
@@ -972,4 +1139,121 @@ void MainWindow::openExtrudeDialog() {
   ribbon_->setActiveTool("design.extrude");
   profilePicker_->selectIfSingle();
   if (profilePicker_->profileCount() == 0) timelineBar_->showStatus(tr("No closed profiles in the visible sketches"));
+}
+
+// ---- Preferences and help ------------------------------------------------------------
+
+void MainWindow::openPreferences() {
+  auto* dialog = new PreferencesDialog(this);
+  dialog->setAttribute(Qt::WA_DeleteOnClose);
+  connect(dialog, &PreferencesDialog::applied, this, &MainWindow::applyPreferences);
+  dialog->open();
+}
+
+void MainWindow::applyPreferences() {
+  viewport_->setNavigation(prefs::flag(prefs::kOrbitMiddle), prefs::flag(prefs::kReverseZoom),
+                           prefs::flag(prefs::kAnimateCamera));
+  navBar_->setGridChecked(prefs::flag(prefs::kShowGrid));
+  documentBar_->setVersionVisible(prefs::flag(prefs::kShowVersion));
+  if (sketchEditor_) sketchEditor_->reload();
+  showSketches();
+  refreshBrowser();
+}
+
+void MainWindow::buildHelpMenu() {
+  QMenu* menu = documentBar_->helpMenu();
+  const QString repo = branding::kRepoUrl;
+  auto open = [](const QString& url) { QDesktopServices::openUrl(QUrl(url)); };
+  menu->addAction(icons::get("document", 16), tr("User Guide"), this, [=] { open(repo + "#readme"); });
+  menu->addAction(icons::get("select", 16), tr("Keyboard and Mouse Overview"), this, &MainWindow::showShortcuts);
+  menu->addSeparator();
+  menu->addAction(icons::get("measure", 16), tr("Diagnostics…"), this, &MainWindow::showDiagnostics);
+  menu->addAction(icons::get("folder", 16), tr("Open Settings Folder"), this, [] {
+    QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(QSettings().fileName()).absolutePath()));
+  });
+  menu->addAction(icons::get("export", 16), tr("Check for Updates…"), this, [=] { open(repo + "/releases"); });
+  menu->addAction(icons::get("comment", 16), tr("Send Feedback…"), this, [=] { open(repo + "/issues/new"); });
+  menu->addSeparator();
+  menu->addAction(tr("About %1").arg(branding::kDisplayName), this, &MainWindow::showAbout);
+  menu->addAction(tr("About Qt"), qApp, &QApplication::aboutQt);
+}
+
+namespace {
+
+// A read-only two-column table in a themed dialog.
+QDialog* infoDialog(QWidget* parent, const QString& title, const QStringList& headers,
+                    const QList<QPair<QString, QString>>& rows, bool copyButton) {
+  auto* d = new QDialog(parent);
+  d->setObjectName("InfoDialog");
+  d->setWindowTitle(title);
+  d->setAttribute(Qt::WA_DeleteOnClose);
+  d->resize(620, 460);
+  auto* layout = new QVBoxLayout(d);
+  auto* table = new QTableWidget(int(rows.size()), 2, d);
+  table->setObjectName("InfoTable");
+  table->setHorizontalHeaderLabels(headers);
+  table->verticalHeader()->hide();
+  table->horizontalHeader()->setStretchLastSection(true);
+  table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+  table->setSelectionMode(QAbstractItemView::NoSelection);
+  table->setShowGrid(false);
+  for (int i = 0; i < rows.size(); ++i) {
+    table->setItem(i, 0, new QTableWidgetItem(rows[i].first));
+    table->setItem(i, 1, new QTableWidgetItem(rows[i].second));
+  }
+  table->resizeColumnToContents(0);
+  table->setColumnWidth(0, table->columnWidth(0) + 24);
+  layout->addWidget(table);
+  auto* buttons = new QHBoxLayout;
+  buttons->addStretch(1);
+  if (copyButton) {
+    auto* copy = new QPushButton(QObject::tr("Copy to Clipboard"), d);
+    QObject::connect(copy, &QPushButton::clicked, d, [rows] {
+      QStringList lines;
+      for (const auto& r : rows) lines << r.first + ": " + r.second;
+      QGuiApplication::clipboard()->setText(lines.join('\n'));
+    });
+    buttons->addWidget(copy);
+  }
+  auto* close = new QPushButton(QObject::tr("Close"), d);
+  close->setObjectName("PrimaryButton");
+  QObject::connect(close, &QPushButton::clicked, d, &QDialog::accept);
+  buttons->addWidget(close);
+  layout->addLayout(buttons);
+  return d;
+}
+
+}  // namespace
+
+void MainWindow::showShortcuts() {
+  const QList<QPair<QString, QString>> rows = {
+      {tr("Middle-drag"), prefs::flag(prefs::kOrbitMiddle) ? tr("Orbit") : tr("Pan")},
+      {tr("Shift + middle-drag"), prefs::flag(prefs::kOrbitMiddle) ? tr("Pan") : tr("Orbit")},
+      {tr("Mouse wheel"), tr("Zoom at the cursor")},
+      {tr("Left-drag"), tr("Window select (or the nav bar's orbit/pan/zoom mode)")},
+      {tr("F6"), tr("Fit all")},
+      {tr("Ctrl+Z / Ctrl+Y"), tr("Undo / redo (also Ctrl+Shift+Z)")},
+      {tr("Sketch: L R C A P"), tr("Line, rectangle, circle, 3-point arc, point")},
+      {tr("Sketch: D"), tr("Dimension")},
+      {tr("Sketch: X"), tr("Toggle construction")},
+      {tr("Sketch: S / Esc"), tr("Select / stop the tool")},
+      {tr("Sketch: Tab"), tr("While drawing, jump to the size box and type a value")},
+      {tr("Sketch: Delete"), tr("Delete the selection")},
+      {tr("Double-click a sketch"), tr("Edit it (timeline or Browser)")},
+      {tr("Double-click a dimension"), tr("Change its value")},
+  };
+  infoDialog(this, tr("Keyboard and Mouse Overview"), {tr("Input"), tr("Action")}, rows, false)->open();
+}
+
+void MainWindow::showDiagnostics() {
+  const QList<QPair<QString, QString>> rows = {
+      {tr("Version"), QString("%1 %2").arg(branding::kDisplayName, branding::kVersion)},
+      {tr("Qt"), QString(qVersion())},
+      {tr("Open CASCADE"), QString(OCC_VERSION_COMPLETE)},
+      {tr("OpenGL"), viewport_->glInfo()},
+      {tr("Operating system"), QSysInfo::prettyProductName() + " (" + QSysInfo::currentCpuArchitecture() + ")"},
+      {tr("Theme"), theme::current().light ? tr("Light") : tr("Dark")},
+      {tr("Settings file"), QSettings().fileName()},
+  };
+  infoDialog(this, tr("Diagnostics"), {tr("Item"), tr("Value")}, rows, true)->open();
 }

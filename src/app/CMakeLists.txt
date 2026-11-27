@@ -28,15 +28,22 @@ qt_add_executable(app
   widgets/Ribbon.h
   widgets/TimelineBar.cpp
   widgets/TimelineBar.h
+  Settings.h
+  widgets/PreferencesDialog.cpp
+  widgets/PreferencesDialog.h
   sketch/Pickers.cpp
   sketch/Pickers.h
   sketch/SketchEditor.cpp
+  sketch/SketchPalette.cpp
+  sketch/SketchPalette.h
   sketch/SketchEditor.h)
 
 target_include_directories(app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # Icons: every SVG in resources/icons, served as :/icons/<name>.svg
-file(GLOB APP_ICONS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/resources/icons/*.svg")
+file(GLOB APP_ICONS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/resources/icons/*.svg"
+  "${CMAKE_SOURCE_DIR}/resources/icons/color/*.svg"
+  "${CMAKE_SOURCE_DIR}/resources/icons/color-light/*.svg")
 qt_add_resources(app "icons"
   PREFIX "/"
   BASE "${CMAKE_SOURCE_DIR}/resources"

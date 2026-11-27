@@ -3,6 +3,7 @@
 #include "Theme.h"
 
 #include <QApplication>
+#include <QSettings>
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -15,6 +16,9 @@ int main(int argc, char* argv[]) {
   QApplication::setOrganizationName(branding::kOrganization);
   QApplication::setOrganizationDomain(branding::kDomain);
   QApplication::setDesktopFileName(branding::kAppId);
+  // Settings in an .ini file (not the registry) so Preferences can export,
+  // import and open the settings folder the same way on every OS.
+  QSettings::setDefaultFormat(QSettings::IniFormat);
 
   // Menus, combo boxes and tooltips fade/slide open instead of popping.
   for (Qt::UIEffect e : {Qt::UI_AnimateMenu, Qt::UI_FadeMenu, Qt::UI_AnimateCombo, Qt::UI_AnimateTooltip,

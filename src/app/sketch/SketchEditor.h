@@ -46,6 +46,14 @@ class SketchEditor : public QObject, public ViewportTool {
   void clearDisplay();
   bool fullyConstrained() const { return dof_ == 0; }
 
+  // Sketch Palette.
+  enum class Display { Dimensions, Constraints, Points, Profiles, Snap };
+  void setDisplay(Display what, bool on);
+  bool display(Display what) const;
+  void setConstructionMode(bool on);
+  bool constructionMode() const { return constructionMode_; }
+  void selectUnconstrained();
+
   // ViewportTool
   bool mousePress(QMouseEvent* e) override;
   bool mouseMove(QMouseEvent* e) override;
@@ -94,8 +102,24 @@ class SketchEditor : public QObject, public ViewportTool {
   bool addConstraint(model::ConstraintKind kind, std::uint64_t a, std::uint64_t b = 0, std::uint64_t c = 0,
                      double value = 0.0, bool quiet = false);
 
+  // Sizes typed while drawing (value[i] in mm when set[i]).
+  struct Typed {
+    double value[2] = {0, 0};
+    bool set[2] = {false, false};
+  };
+
   // Tools.
-  void clickDraw(const Hit& h);
+  void clickDraw(const Hit& h, const Typed& typed);
+  void clickDraw(const Hit& h) { clickDraw(h, Typed()); }
+  void markNew(const std::vector<std::uint64_t>& curves);
+  int sizeBoxCount() const;
+  bool typedValue(int i, double& mm);
+  void showSizeBoxes(const double live[2], const QPointF& anchor);
+  void hideSizeBoxes();
+  void resetSizeBoxes();
+  void focusSizeBox(int i);
+  Hit typedTarget(const Hit& first, Hit cursor, Typed& typed);
+  void commitSizes();
   void clickDimension(const Hit& h, const QPointF& pos);
   void clickConstrain(const Hit& h);
   void resetDraft();
@@ -156,4 +180,13 @@ class SketchEditor : public QObject, public ViewportTool {
   QPointer<QLineEdit> valueEdit_;
   PendingDimension pending_;
   QTimer redrawTimer_;
+
+  QPointer<QLineEdit> sizeEdit_[2];
+  bool sizeTyped_[2] = {false, false};
+  bool constructionMode_ = false;
+  bool showDims_ = true;
+  bool showTags_ = true;
+  bool showPoints_ = true;
+  bool showProfiles_ = true;
+  bool snap_ = true;
 };

@@ -20,6 +20,12 @@ class NavBar : public QFrame {
   void displayModeChanged(NavBar::DisplayMode mode);
   void gridToggled(bool visible);
 
+ public:
+  void setGridChecked(bool on);
+
+ private:
+  class QToolButton* gridButton_ = nullptr;
+
  private:
   QToolButton* addButton(const QString& icon, const QString& tip, bool checkable = false);
   void addSeparator();

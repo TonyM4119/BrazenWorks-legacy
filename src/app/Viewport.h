@@ -81,6 +81,7 @@ class Viewport : public QOpenGLWidget, public AIS_ViewController {
 
   void showBody(const TopoDS_Shape& body);
   void setBodyVisible(bool visible);
+  bool bodyVisible() const { return bodyVisible_; }
   void fitAll(bool animate = false);
   void homeView();  // isometric, fitted, animated
 
@@ -106,6 +107,10 @@ class Viewport : public QOpenGLWidget, public AIS_ViewController {
   // Turn the camera to look along -normal with `up` pointing up, fitted.
   void lookAlong(const gp_Dir& normal, const gp_Dir& up);
   void setBodyTransparency(double transparency);
+  // Preferences → Navigation.
+  void setNavigation(bool orbitWithMiddle, bool reverseZoom, bool animateCamera);
+  // Preferences → Diagnostics: the OpenGL renderer and version in use.
+  QString glInfo() const { return glInfo_; }
 
   QSize minimumSizeHint() const override { return {200, 200}; }
 
@@ -137,6 +142,10 @@ class Viewport : public QOpenGLWidget, public AIS_ViewController {
   Handle(AIS_Shape) body_;
   bool fitPending_ = false;
   DragMode dragMode_ = DragMode::Select;
+  bool orbitWithMiddle_ = false;
+  bool reverseZoom_ = false;
+  bool animate_ = true;
+  QString glInfo_;
   DisplayMode displayMode_ = DisplayMode::ShadedWithEdges;
   bool bodyVisible_ = true;
   double bodyTransparency_ = 0.0;

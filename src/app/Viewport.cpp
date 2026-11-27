@@ -17,7 +17,9 @@
 #include <OpenGl_View.hxx>
 #include <OpenGl_Window.hxx>
 #include <Graphic3d_Camera.hxx>
+#include <Prs3d_DatumAspect.hxx>
 #include <Prs3d_Drawer.hxx>
+#include <Prs3d_TextAspect.hxx>
 #include <Prs3d_LineAspect.hxx>
 #include <Prs3d_PointAspect.hxx>
 #include <Prs3d_ShadingAspect.hxx>
@@ -25,9 +27,12 @@
 #include <Quantity_Color.hxx>
 #include <V3d_TypeOfOrientation.hxx>
 
+#include "Settings.h"
 #include "Theme.h"
 
 #include <QKeyEvent>
+#include <QOpenGLContext>
+#include <QOpenGLFunctions>
 #include <QMouseEvent>
 #include <QWindow>
 
@@ -122,7 +127,8 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   if (auto grid = viewer_->Grid(Aspect_GT_Rectangular); !grid.IsNull()) {
     // Subtle lines like the UI concept: minor slightly above the background,
     // every tenth line a little stronger.
-    const QColor minor = theme::current().viewport.lighter(132);
+    const QColor minor = theme::current().light ? theme::current().viewport.darker(106)
+                                                 : theme::current().viewport.lighter(132);
     const QColor major = theme::current().viewportGrid;
     grid->SetColors(Quantity_Color(minor.redF(), minor.greenF(), minor.blueF(), Quantity_TOC_sRGB),
                     Quantity_Color(major.redF(), major.greenF(), major.blueF(), Quantity_TOC_sRGB));
@@ -134,34 +140,60 @@ Viewport::Viewport(QWidget* parent) : QOpenGLWidget(parent) {
   // Rounder curved surfaces: finer tessellation than OCCT's defaults
   // (chord deviation 0.1% of size, 20° angle).
   constexpr double kDegree = 3.14159265358979323846 / 180.0;
-  context_->DefaultDrawer()->SetDeviationCoefficient(0.0003);
-  context_->DefaultDrawer()->SetDeviationAngle(4.0 * kDegree);
+  const bool high = prefs::flag(prefs::kHighQuality);
+  context_->DefaultDrawer()->SetDeviationCoefficient(high ? 0.0003 : 0.001);
+  context_->DefaultDrawer()->SetDeviationAngle((high ? 4.0 : 12.0) * kDegree);
 
   viewCube_ = new AIS_ViewCube();
   viewCube_->SetViewAnimation(myViewAnimation);
   viewCube_->SetFixedAnimationLoop(false);
   viewCube_->SetAutoStartAnimation(true);
   viewCube_->SetDuration(0.4);
-  viewCube_->SetSize(55);
-  // Match the dark theme instead of OCCT's default white cube.
+  viewCube_->SetSize(68);
+  // Fusion-style cube: light faces, darker edges and corners, dark labels, and
+  // coloured X/Y/Z axes running from its origin corner.
   {
-    const theme::Palette& tp = theme::current();
-    auto occt = [](const QColor& c) { return Quantity_Color(c.redF(), c.greenF(), c.blueF(), Quantity_TOC_sRGB); };
-    viewCube_->SetBoxColor(occt(tp.panelBorder));
-    viewCube_->SetInnerColor(occt(tp.panel));
-    viewCube_->SetTextColor(occt(tp.text));
-    viewCube_->SetFontHeight(11);
-    viewCube_->SetRoundRadius(0.1);
-    viewCube_->SetDrawAxes(false);
+    auto rgb = [](int r, int g, int b) { return Quantity_Color(r / 255.0, g / 255.0, b / 255.0, Quantity_TOC_sRGB); };
+    viewCube_->SetBoxColor(rgb(236, 239, 242));
+    viewCube_->BoxEdgeStyle()->SetColor(rgb(196, 202, 209));
+    viewCube_->BoxCornerStyle()->SetColor(rgb(176, 183, 191));
+    viewCube_->SetInnerColor(rgb(120, 126, 133));
+    viewCube_->SetTextColor(rgb(70, 76, 84));
+    viewCube_->SetFont(Font_NOF_SANS_SERIF);
+    viewCube_->SetFontHeight(12);
+    viewCube_->SetRoundRadius(0.08);
+    viewCube_->SetBoxEdgeGap(0.0);
+    viewCube_->SetDrawAxes(true);
+    viewCube_->SetAxesLabels("X", "Y", "Z");
+    viewCube_->SetAxesPadding(1.0);
+    viewCube_->SetAxesRadius(1.1);
+    viewCube_->SetAxesConeRadius(0.0);
+    viewCube_->SetAxesSphereRadius(1.4);
+    // The cube's own datum style; otherwise it falls back to the shared default.
+    Handle(Prs3d_DatumAspect) datum = new Prs3d_DatumAspect();
+    viewCube_->Attributes()->SetDatumAspect(datum);
+    const std::pair<Prs3d_DatumParts, Quantity_Color> axes[] = {
+        {Prs3d_DatumParts_XAxis, rgb(229, 72, 77)},
+        {Prs3d_DatumParts_YAxis, rgb(61, 187, 79)},
+        {Prs3d_DatumParts_ZAxis, rgb(62, 124, 240)},
+    };
+    for (const auto& [part, color] : axes) {
+      datum->ShadingAspect(part)->SetColor(color);
+      datum->LineAspect(part)->SetColor(color);
+      datum->TextAspect(part)->SetColor(color);
+      datum->TextAspect(part)->SetFont(Font_NOF_SANS_SERIF);
+      datum->TextAspect(part)->SetHeight(14.0);
+    }
   }
   viewCube_->SetTransformPersistence(new Graphic3d_TransformPers(
-      Graphic3d_TMF_TriedronPers, Aspect_TOTP_RIGHT_UPPER, Vec2i(90, 90)));
+      Graphic3d_TMF_TriedronPers, Aspect_TOTP_RIGHT_UPPER, Vec2i(105, 105)));
 
   view_ = viewer_->CreateView();
   view_->SetImmediateUpdate(false);
   // Smooth edges: 4x multisample anti-aliasing for shaded faces, edges and grid.
-  view_->ChangeRenderingParams().NbMsaaSamples = 4;
-  view_->ChangeRenderingParams().IsAntialiasingEnabled = true;
+  const bool aa = prefs::flag(prefs::kAntialiasing);
+  view_->ChangeRenderingParams().NbMsaaSamples = aa ? 4 : 0;
+  view_->ChangeRenderingParams().IsAntialiasingEnabled = aa;
 
   setupMouseGestures();
 
@@ -193,14 +225,26 @@ Viewport::~Viewport() {
 void Viewport::setupMouseGestures() {
   auto& map = ChangeMouseGestureMap();  // typedef AIS_MouseGestureMap is gone in OCCT 8
   map.Clear();
-  map.Bind(Aspect_VKeyMouse_MiddleButton, AIS_MouseGesture_Pan);
+  // Default (Fusion): middle-drag pans, Shift+middle orbits. Preferences can swap them.
+  map.Bind(Aspect_VKeyMouse_MiddleButton, orbitWithMiddle_ ? AIS_MouseGesture_RotateOrbit : AIS_MouseGesture_Pan);
   map.Bind(Aspect_VKeyMouse(Aspect_VKeyMouse_MiddleButton) | Aspect_VKeyFlags(Aspect_VKeyFlags_SHIFT),
-           AIS_MouseGesture_RotateOrbit);
+           orbitWithMiddle_ ? AIS_MouseGesture_Pan : AIS_MouseGesture_RotateOrbit);
   switch (dragMode_) {
     case DragMode::Select: map.Bind(Aspect_VKeyMouse_LeftButton, AIS_MouseGesture_SelectRectangle); break;
     case DragMode::Orbit: map.Bind(Aspect_VKeyMouse_LeftButton, AIS_MouseGesture_RotateOrbit); break;
     case DragMode::Pan: map.Bind(Aspect_VKeyMouse_LeftButton, AIS_MouseGesture_Pan); break;
     case DragMode::Zoom: map.Bind(Aspect_VKeyMouse_LeftButton, AIS_MouseGesture_Zoom); break;
+  }
+}
+
+void Viewport::setNavigation(bool orbitWithMiddle, bool reverseZoom, bool animateCamera) {
+  orbitWithMiddle_ = orbitWithMiddle;
+  reverseZoom_ = reverseZoom;
+  animate_ = animateCamera;
+  if (tool_) {
+    setTool(tool_);  // rebinds, keeping left-drag for the tool
+  } else {
+    setupMouseGestures();
   }
 }
 
@@ -269,6 +313,12 @@ void Viewport::homeView() {
 }
 
 void Viewport::animateCamera(const std::function<void()>& applyTarget) {
+  if (!animate_) {
+    applyTarget();
+    view_->Invalidate();
+    update();
+    return;
+  }
   Handle(Graphic3d_Camera) start = new Graphic3d_Camera();
   start->Copy(view_->Camera());
   applyTarget();  // moves the camera to the goal without drawing
@@ -297,6 +347,13 @@ void Viewport::initializeGL() {
     return;
   }
 
+  {
+    auto str = [](const GLubyte* v) { return v ? QString::fromLatin1(reinterpret_cast<const char*>(v)) : QString(); };
+    QOpenGLFunctions* f = context()->functions();
+    glInfo_ = QString("%1 — %2 (OpenGL %3)")
+                  .arg(str(f->glGetString(GL_VENDOR)), str(f->glGetString(GL_RENDERER)),
+                       str(f->glGetString(GL_VERSION)));
+  }
   Handle(Aspect_NeutralWindow) window = Handle(Aspect_NeutralWindow)::DownCast(view_->Window());
   const bool firstInit = window.IsNull();
   if (firstInit) {
@@ -417,7 +474,8 @@ void Viewport::wheelEvent(QWheelEvent* e) {
   QOpenGLWidget::wheelEvent(e);
   if (view_.IsNull()) return;
   const Vec2i pos = toPoint(e->position(), devicePixelRatioF());
-  if (UpdateZoom(Aspect_ScrollDelta(pos, double(e->angleDelta().y()) / 8.0))) {
+  const double delta = double(e->angleDelta().y()) / 8.0 * (reverseZoom_ ? -1.0 : 1.0);
+  if (UpdateZoom(Aspect_ScrollDelta(pos, delta))) {
     update();
   }
   if (tool_) tool_->viewChanged();

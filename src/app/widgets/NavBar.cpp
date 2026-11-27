@@ -68,6 +68,7 @@ NavBar::NavBar(QWidget* parent) : QFrame(parent) {
 
   QToolButton* grid = addButton("grid", tr("Show grid"), true);
   grid->setChecked(true);
+  gridButton_ = grid;
   connect(grid, &QToolButton::toggled, this, &NavBar::gridToggled);
 }
 
@@ -88,4 +89,8 @@ void NavBar::addSeparator() {
   line->setAttribute(Qt::WA_StyledBackground);
   line->setFixedSize(1, 20);
   layout()->addWidget(line);
+}
+
+void NavBar::setGridChecked(bool on) {
+  if (gridButton_) gridButton_->setChecked(on);  // emits gridToggled
 }

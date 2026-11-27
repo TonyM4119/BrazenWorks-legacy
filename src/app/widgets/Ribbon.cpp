@@ -104,7 +104,7 @@ void Ribbon::rebuildTools() {
       b->setObjectName("ToolButton");
       b->setIcon(icons::get(t.icon, theme::kIconSize));
       b->setIconSize(QSize(theme::kIconSize, theme::kIconSize));
-      b->setFixedSize(40, 40);
+      b->setFixedSize(44, 44);
       if (t.primary) {
         b->setObjectName("PrimaryToolButton");
         b->setIcon(icons::tinted(t.icon, theme::current().accentText, theme::kIconSize));

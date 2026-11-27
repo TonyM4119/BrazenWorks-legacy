@@ -1,6 +1,7 @@
 #include "SketchEditor.h"
 
 #include "Kernel.h"
+#include "Settings.h"
 #include "Theme.h"
 
 #include <QKeyEvent>
@@ -20,7 +21,7 @@ using K = model::ConstraintKind;
 using EK = model::SketchEntityKind;
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr double kSnapPx = 9.0;     // pick radius
+double pickPx() { return prefs::get(prefs::kPickRadius).toDouble(); }  // Preferences → Sketch
 constexpr double kInferDeg = 4.0;   // horizontal/vertical inference while drawing
 
 QString qs(const rust::String& s) { return QString::fromUtf8(s.data(), int(s.size())); }
@@ -122,6 +123,8 @@ QString kindName(K k) {
 
 SketchEditor::SketchEditor(Viewport* view, Host host, std::uint64_t sketch, QObject* parent)
     : QObject(parent), view_(view), host_(std::move(host)), sketch_(sketch) {
+  showTags_ = prefs::flag(prefs::kConstraintTags);
+  snap_ = prefs::flag(prefs::kSnap);
   redrawTimer_.setSingleShot(true);
   redrawTimer_.setInterval(60);
   connect(&redrawTimer_, &QTimer::timeout, this, [this] {
@@ -210,7 +213,7 @@ SketchEditor::Hit SketchEditor::hitTest(const QPointF& pos, bool pointsFirst, bo
   double u, v;
   if (!toPlane(pos, u, v)) return h;
   h.u = u, h.v = v;
-  const double tol = kSnapPx * unitsPerPixel();
+  const double tol = pickPx() * unitsPerPixel();
 
   if (pointsFirst) {
     double best = tol;
@@ -256,6 +259,11 @@ SketchEditor::Hit SketchEditor::hitTest(const QPointF& pos, bool pointsFirst, bo
 // Where a click lands while drawing: an existing point, the origin, a spot on a
 // curve (projected onto it), or free space.
 SketchEditor::Hit SketchEditor::snap(const QPointF& pos) const {
+  if (!snap_) {
+    Hit free;
+    toPlane(pos, free.u, free.v);
+    return free;
+  }
   Hit h = hitTest(pos);
   if (h.kind == Hit::Curve) {
     const auto* e = entity(h.id);
@@ -351,6 +359,8 @@ void SketchEditor::setConstraint(K kind) {
 }
 
 void SketchEditor::resetDraft() {
+  sizeTyped_[0] = sizeTyped_[1] = false;
+  hideSizeBoxes();
   clicks_.clear();
   picks_.clear();
   chainStart_ = 0;
@@ -587,6 +597,21 @@ bool SketchEditor::mouseDoubleClick(QMouseEvent* e) {
 
 bool SketchEditor::keyPress(QKeyEvent* e) {
   if (e->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier)) return false;
+  // While drawing, digits or Tab go to the size box (like Fusion and MitCAD).
+  if (sizeBoxCount() > 0) {
+    const QString t = e->text();
+    if (e->key() == Qt::Key_Tab) {
+      focusSizeBox(0);
+      return true;
+    }
+    if (!t.isEmpty() && (t[0].isDigit() || t[0] == '.') && sizeEdit_[0]) {
+      focusSizeBox(0);
+      sizeEdit_[0]->setText(t);
+      sizeTyped_[0] = true;
+      drawPreview();
+      return true;
+    }
+  }
   switch (e->key()) {
     case Qt::Key_Escape:
       if (!clicks_.empty() || !picks_.empty()) {
@@ -624,9 +649,9 @@ void SketchEditor::viewChanged() { redrawTimer_.start(); }
 
 // ---- Drawing tools ----------------------------------------------------------------
 
-void SketchEditor::clickDraw(const Hit& hIn) {
+void SketchEditor::clickDraw(const Hit& hIn, const Typed& typed) {
   Hit h = hIn;
-  const double tol = kSnapPx * unitsPerPixel();
+  const double tol = pickPx() * unitsPerPixel();
 
   if (mode_ == Mode::Point) {
     if (h.kind == Hit::Point) return;
@@ -649,7 +674,7 @@ void SketchEditor::clickDraw(const Hit& hIn) {
       if (dist(first.u, first.v, h.u, h.v) < tol) return;
       // Horizontal / vertical inference when not landing on a point.
       bool horiz = false, vert = false;
-      if (h.kind != Hit::Point && h.kind != Hit::Origin) {
+      if (h.kind != Hit::Point && h.kind != Hit::Origin && prefs::flag(prefs::kInference)) {
         const double ang = std::abs(std::atan2(h.v - first.v, h.u - first.u)) * 180.0 / kPi;
         if (std::min(ang, 180.0 - ang) < kInferDeg) horiz = true, h.v = first.v, h.kind = Hit::None;
         else if (std::abs(ang - 90.0) < kInferDeg) vert = true, h.u = first.u, h.kind = Hit::None;
@@ -663,6 +688,8 @@ void SketchEditor::clickDraw(const Hit& hIn) {
         const std::uint64_t line = model::sketch_add_line(tl(), sketch_, a, b);
         if (horiz) addConstraint(K::Horizontal, line, 0, 0, 0, true);
         if (vert) addConstraint(K::Vertical, line, 0, 0, 0, true);
+        if (typed.set[0]) addConstraint(K::Length, line, 0, 0, typed.value[0], true);
+        markNew({line});
         if (!chainStart_) chainStart_ = a;
         closed = b == chainStart_;
         endId = b;
@@ -710,6 +737,10 @@ void SketchEditor::clickDraw(const Hit& hIn) {
             addConstraint(K::PointOnCurve, corner, c.id, 0, 0, true);
           }
         }
+        // lines: bottom (width), right (height), top, left.
+        if (typed.set[0] && lines.size() > 0) addConstraint(K::Length, lines[0], 0, 0, typed.value[0], true);
+        if (typed.set[1] && lines.size() > 1) addConstraint(K::Length, lines[1], 0, 0, typed.value[1], true);
+        markNew(std::vector<std::uint64_t>(lines.begin(), lines.end()));
         return true;
       });
       clicks_.clear();
@@ -730,6 +761,8 @@ void SketchEditor::clickDraw(const Hit& hIn) {
             if (const auto* e = entity(circle)) addConstraint(K::PointOnCurve, e->p0, first.id, 0, 0, true);
         }
         if (h.kind == Hit::Point && h.id) addConstraint(K::PointOnCurve, h.id, circle, 0, 0, true);
+        if (typed.set[0]) addConstraint(K::Diameter, circle, 0, 0, typed.value[0], true);
+        markNew({circle});
         return true;
       });
       clicks_.clear();
@@ -758,8 +791,9 @@ void SketchEditor::clickDraw(const Hit& hIn) {
         const std::uint64_t centre = model::sketch_add_point(tl(), sketch_, ux, uy);
         const std::uint64_t ps = resolve(s);
         const std::uint64_t pe = resolve(en);
-        if (cross > 0) model::sketch_add_arc(tl(), sketch_, centre, pe, ps);
-        else model::sketch_add_arc(tl(), sketch_, centre, ps, pe);
+        const std::uint64_t arc = cross > 0 ? model::sketch_add_arc(tl(), sketch_, centre, pe, ps)
+                                            : model::sketch_add_arc(tl(), sketch_, centre, ps, pe);
+        markNew({arc});
         return true;
       });
       clicks_.clear();
@@ -768,6 +802,193 @@ void SketchEditor::clickDraw(const Hit& hIn) {
     }
     default: return;
   }
+}
+
+void SketchEditor::markNew(const std::vector<std::uint64_t>& curves) {
+  if (!constructionMode_) return;
+  for (std::uint64_t id : curves) model::sketch_set_construction(tl(), sketch_, id, true);
+}
+
+// ---- Palette settings ------------------------------------------------------------
+
+void SketchEditor::setDisplay(Display what, bool on) {
+  switch (what) {
+    case Display::Dimensions: showDims_ = on; break;
+    case Display::Constraints: showTags_ = on; break;
+    case Display::Points: showPoints_ = on; break;
+    case Display::Profiles: showProfiles_ = on; break;
+    case Display::Snap: snap_ = on; break;
+  }
+  redraw();
+  drawPreview();
+}
+
+bool SketchEditor::display(Display what) const {
+  switch (what) {
+    case Display::Dimensions: return showDims_;
+    case Display::Constraints: return showTags_;
+    case Display::Points: return showPoints_;
+    case Display::Profiles: return showProfiles_;
+    case Display::Snap: return snap_;
+  }
+  return false;
+}
+
+void SketchEditor::setConstructionMode(bool on) {
+  constructionMode_ = on;
+  emit message(on ? tr("New lines, circles and arcs are construction geometry.")
+                  : tr("New geometry is normal (not construction)."));
+}
+
+void SketchEditor::selectUnconstrained() {
+  setMode(Mode::Select);
+  selected_.clear();
+  for (const auto& e : entities_)
+    if (!e.fully_constrained && e.kind != EK::Point) selected_.insert(e.id);
+  redraw();
+  emit message(selected_.isEmpty() ? tr("Everything is fully constrained.")
+                                   : tr("%n item(s) can still move.", nullptr, int(selected_.size())));
+}
+
+// ---- Typed sizes while drawing ---------------------------------------------------
+
+int SketchEditor::sizeBoxCount() const {
+  if (clicks_.empty()) return 0;
+  switch (mode_) {
+    case Mode::Line: case Mode::Circle: return 1;
+    case Mode::Rectangle: return 2;
+    default: return 0;
+  }
+}
+
+bool SketchEditor::typedValue(int i, double& mm) {
+  if (i >= 2 || !sizeEdit_[i] || !sizeTyped_[i]) return false;
+  const model::LengthParse p = model::length_parse(sizeEdit_[i]->text().trimmed().toStdString(), unit());
+  if (!p.ok || p.mm <= 0) return false;
+  mm = p.mm;
+  return true;
+}
+
+void SketchEditor::showSizeBoxes(const double live[2], const QPointF& anchor) {
+  const int n = sizeBoxCount();
+  for (int i = 0; i < 2; ++i) {
+    if (i >= n) {
+      if (sizeEdit_[i]) sizeEdit_[i]->hide();
+      continue;
+    }
+    if (!sizeEdit_[i]) {
+      auto* e = new QLineEdit(view_);
+      e->setObjectName("SketchValueEdit");
+      e->setFixedWidth(104);
+      connect(e, &QLineEdit::textEdited, this, [this, i] {
+        sizeTyped_[i] = true;
+        drawPreview();
+      });
+      struct Keys : QObject {
+        SketchEditor* ed;
+        int index;
+        Keys(SketchEditor* o, int i, QObject* parent) : QObject(parent), ed(o), index(i) {}
+        bool eventFilter(QObject*, QEvent* ev) override {
+          if (ev->type() != QEvent::KeyPress) return false;
+          const int key = static_cast<QKeyEvent*>(ev)->key();
+          if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            QTimer::singleShot(0, ed, [e = ed] { e->commitSizes(); });
+            return true;
+          }
+          if (key == Qt::Key_Escape) {
+            ed->resetSizeBoxes();
+            ed->view_->setFocus();
+            return true;
+          }
+          if (key == Qt::Key_Tab || key == Qt::Key_Backtab) {
+            ed->focusSizeBox((index + 1) % std::max(ed->sizeBoxCount(), 1));
+            return true;
+          }
+          return false;
+        }
+      };
+      e->installEventFilter(new Keys(this, i, e));
+      sizeEdit_[i] = e;
+    }
+    QLineEdit* e = sizeEdit_[i];
+    if (!sizeTyped_[i] && !e->hasFocus()) e->setText(qs(model::length_format(live[i], unit())));
+    QPoint at = anchor.toPoint() + QPoint(18, 14 + i * 30);
+    at.setX(std::clamp(at.x(), 4, view_->width() - e->width() - 4));
+    at.setY(std::clamp(at.y(), 4, view_->height() - e->height() - 4));
+    e->move(at);
+    e->show();
+    e->raise();
+  }
+}
+
+void SketchEditor::hideSizeBoxes() {
+  for (auto& e : sizeEdit_)
+    if (e) e->hide();
+}
+
+void SketchEditor::resetSizeBoxes() {
+  sizeTyped_[0] = sizeTyped_[1] = false;
+  for (auto& e : sizeEdit_)
+    if (e) e->clearFocus();
+  drawPreview();
+}
+
+void SketchEditor::focusSizeBox(int i) {
+  if (i < 0 || i >= sizeBoxCount() || !sizeEdit_[i]) return;
+  sizeEdit_[i]->setFocus();
+  sizeEdit_[i]->selectAll();
+}
+
+// Where the shape ends if the typed sizes win over the cursor.
+SketchEditor::Hit SketchEditor::typedTarget(const Hit& first, Hit cursor, Typed& typed) {
+  for (int i = 0; i < 2; ++i) typed.set[i] = typedValue(i, typed.value[i]);
+  Hit h = cursor;
+  switch (mode_) {
+    case Mode::Line:
+      if (typed.set[0]) {
+        double du = h.u - first.u, dv = h.v - first.v;
+        double len = std::hypot(du, dv);
+        if (len < 1e-9) du = 1, dv = 0, len = 1;  // no direction yet: draw along +X
+        h.u = first.u + du / len * typed.value[0];
+        h.v = first.v + dv / len * typed.value[0];
+        h.kind = Hit::None;
+      }
+      break;
+    case Mode::Circle:
+      if (typed.set[0]) {
+        h.u = first.u + typed.value[0] / 2;
+        h.v = first.v;
+        h.kind = Hit::None;
+      }
+      break;
+    case Mode::Rectangle:
+      for (int i = 0; i < 2; ++i) {
+        if (!typed.set[i]) continue;
+        double& c = i == 0 ? h.u : h.v;
+        const double f = i == 0 ? first.u : first.v;
+        c = f + (c >= f ? 1 : -1) * typed.value[i];
+        h.kind = Hit::None;
+      }
+      break;
+    default: break;
+  }
+  return h;
+}
+
+void SketchEditor::commitSizes() {
+  if (clicks_.empty()) return;
+  Typed typed;
+  Hit cursor = snap(cursor_);
+  if (mode_ == Mode::Line && prefs::flag(prefs::kInference) && cursor.kind != Hit::Point) {
+    const Hit& a = clicks_.front();
+    const double ang = std::abs(std::atan2(cursor.v - a.v, cursor.u - a.u)) * 180.0 / kPi;
+    if (std::min(ang, 180.0 - ang) < kInferDeg) cursor.v = a.v;
+    else if (std::abs(ang - 90.0) < kInferDeg) cursor.u = a.u;
+  }
+  const Hit target = typedTarget(clicks_.front(), cursor, typed);
+  sizeTyped_[0] = sizeTyped_[1] = false;
+  view_->setFocus();
+  clickDraw(target, typed);
 }
 
 // ---- Dimensions ----------------------------------------------------------------
@@ -1132,7 +1353,7 @@ void SketchEditor::redraw() {
 
   Overlay o;
   // Closed regions, faintly filled so you can see what will extrude.
-  for (const auto& p : profiles_) {
+  for (const auto& p : showProfiles_ ? profiles_ : std::vector<model::ProfileInfo>{}) {
     std::vector<std::vector<geom::Point2>> loops;
     std::size_t k = 0;
     for (std::size_t n : p.loop_sizes) {
@@ -1153,6 +1374,7 @@ void SketchEditor::redraw() {
   auto points = [&](const std::vector<geom::Point2>& pts, const QColor& c, double size) {
     if (!pts.empty()) o.points.push_back({geom::makeVertices(gp, pts), c, size});
   };
+  if (!showPoints_) pFree.clear(), pFixed.clear();
   points(pFree, pal.highlight, 2.2);
   points(pFixed, pal.text, 2.2);
   points(pSelected, pal.accent, 3.0);
@@ -1161,6 +1383,7 @@ void SketchEditor::redraw() {
 
   // Dimensions and constraint glyphs.
   labels_.clear();
+  const bool showTags = showTags_;
   std::map<std::uint64_t, double> glyphOffset;  // px used so far along each entity
   auto addLabel = [&](double u, double v, const QString& text, const QColor& color, double height,
                       std::uint64_t con, bool dim) {
@@ -1199,6 +1422,7 @@ void SketchEditor::redraw() {
   for (const auto& c : constraints_) {
     const bool sel = selectedCon_.contains(c.id);
     if (c.is_dimension) {
+      if (!showDims_) continue;
       const QColor color = sel ? pal.accent : c.conflicting ? pal.danger : pal.text;
       const auto* ea = entity(c.a);
       const auto* eb = entity(c.b);
@@ -1271,7 +1495,7 @@ void SketchEditor::redraw() {
       continue;
     }
     const QString g = glyph(c.kind);
-    if (g.isEmpty()) continue;
+    if (g.isEmpty() || !showTags) continue;
     const QColor color = sel ? pal.accent : c.conflicting ? pal.danger : pal.text;
     std::vector<std::uint64_t> on;
     if (c.kind == K::Symmetric) on = {c.c};
@@ -1332,6 +1556,8 @@ void SketchEditor::drawPreview() {
   }
   const auto fmt = [this](double mm) { return qs(model::length_format(mm, unit())); };
 
+  double live[2] = {0, 0};  // sizes for the typed-value boxes
+  if (sizeBoxCount() == 0) hideSizeBoxes();
   if (!clicks_.empty() && drawing) {
     const Hit& a = clicks_[0];
     std::vector<geom::Seg2> segs;
@@ -1343,35 +1569,50 @@ void SketchEditor::drawPreview() {
     switch (mode_) {
       case Mode::Line: {
         QString infer;
-        if (h.kind != Hit::Point && h.kind != Hit::Origin) {
+        if (h.kind != Hit::Point && h.kind != Hit::Origin && prefs::flag(prefs::kInference)) {
           const double ang = std::abs(std::atan2(cv - a.v, cu - a.u)) * 180.0 / kPi;
           if (std::min(ang, 180.0 - ang) < kInferDeg) cv = a.v, infer = "H";
           else if (std::abs(ang - 90.0) < kInferDeg) cu = a.u, infer = "V";
         }
+        {
+          Hit c = h;
+          c.u = cu, c.v = cv;
+          Typed t;
+          c = typedTarget(a, c, t);
+          cu = c.u, cv = c.v;
+        }
         line(a.u, a.v, cu, cv);
-        const double len = dist(a.u, a.v, cu, cv);
-        QString text = fmt(len);
-        if (!infer.isEmpty()) text += "  " + infer;
-        o.labels.push_back({world((a.u + cu) / 2, (a.v + cv) / 2 + 16 * upp), text, pal.accent, 14.0, pal.panel});
+        live[0] = dist(a.u, a.v, cu, cv);
+        if (!infer.isEmpty())
+          o.labels.push_back({world((a.u + cu) / 2, (a.v + cv) / 2 + 16 * upp), infer, pal.accent, 14.0, pal.panel});
         break;
       }
-      case Mode::Rectangle:
+      case Mode::Rectangle: {
+        Hit c = h;
+        c.u = cu, c.v = cv;
+        Typed t;
+        c = typedTarget(a, c, t);
+        cu = c.u, cv = c.v;
         line(a.u, a.v, cu, a.v), line(cu, a.v, cu, cv), line(cu, cv, a.u, cv), line(a.u, cv, a.u, a.v);
-        o.labels.push_back({world((a.u + cu) / 2, std::min(a.v, cv) - 14 * upp), fmt(std::abs(cu - a.u)),
-                            pal.accent, 14.0, pal.panel});
-        o.labels.push_back({world(std::max(a.u, cu) + 24 * upp, (a.v + cv) / 2), fmt(std::abs(cv - a.v)),
-                            pal.accent, 14.0, pal.panel});
+        live[0] = std::abs(cu - a.u);
+        live[1] = std::abs(cv - a.v);
         break;
+      }
       case Mode::Circle: {
-        const double r = dist(a.u, a.v, cu, cv);
+        double r = dist(a.u, a.v, cu, cv);
+        if (double typedD; typedValue(0, typedD)) {
+          const double k = r > 1e-9 ? typedD / 2 / r : 0;
+          if (r <= 1e-9) cu = a.u + typedD / 2, cv = a.v;
+          else cu = a.u + (cu - a.u) * k, cv = a.v + (cv - a.v) * k;
+          r = typedD / 2;
+        }
+        live[0] = 2 * r;
         if (r > 1e-9) {
           geom::Seg2 s;
           s.kind = geom::Seg2::Kind::Circle;
           s.cx = a.u, s.cy = a.v, s.radius = r;
           segs.push_back(s);
           line(a.u, a.v, cu, cv);
-          o.labels.push_back({world((a.u + cu) / 2, (a.v + cv) / 2 + 14 * upp), QStringLiteral("Ø") + fmt(2 * r),
-                              pal.accent, 14.0, pal.panel});
         }
         break;
       }
@@ -1404,6 +1645,7 @@ void SketchEditor::drawPreview() {
       default: break;
     }
     if (!segs.empty()) o.curves.push_back({geom::makeCurves(gp, segs), pal.highlight, 1.8, false});
+    if (sizeBoxCount() > 0) showSizeBoxes(live, cursor_);
   }
   view_->setOverlay("sketch-preview", o);
 }

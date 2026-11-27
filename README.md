@@ -100,7 +100,9 @@ millimeters, so switching units never changes the geometry.
 1. **Create Sketch** (first tool in the ribbon), then click one of the three origin
    planes, or pick it in the dialog. The view turns to face the plane.
 2. Draw with the **SKETCH** tab or keys: **L** line, **R** rectangle, **C** circle,
-   **A** 3-point arc, **P** point. Clicks snap to points, the origin and curves; lines
+   **A** 3-point arc, **P** point. After the first click, type a size (or press **Tab**)
+   and **Enter**: line length, circle diameter, rectangle width **Tab** height; the
+   dimension is added for you. Clicks snap to points, the origin and curves; lines
    within a few degrees of level or plumb get Horizontal/Vertical. Double-click, right-
    click or **Esc** ends a line chain.
 3. **D** dimensions: click a line then empty space (length), a circle (diameter), an arc
@@ -114,8 +116,20 @@ millimeters, so switching units never changes the geometry.
 7. **Finish Sketch**, then **Extrude**: click profiles (they light up), set the distance,
    direction and Join/Cut/New Body; the result previews live.
 
+The **Sketch Palette** on the right shows the degrees of freedom, display settings
+(construction, snap, dimensions, constraints, points, profiles), every tool, and
+**Finish Sketch** / **Cancel Sketch** (discards everything since the sketch opened).
+
 Double-click a sketch in the timeline or Browser to edit it later. **Ctrl+Z** /
 **Ctrl+Y** undo and redo anything.
+
+## Preferences
+
+The gear at the top right opens **Preferences**: theme (dark or light), default units,
+middle-button orbit or pan, wheel direction, camera animation, anti-aliasing, surface
+quality, grid, and sketch snapping, inference, constraint tags and pick radius. Settings
+can be exported and imported as an `.ini` file. The **?** menu has the user guide,
+keyboard and mouse overview, diagnostics, updates and feedback.
 
 ## Viewport controls
 

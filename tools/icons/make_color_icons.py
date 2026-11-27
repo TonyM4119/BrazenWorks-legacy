@@ -1,0 +1,655 @@
+#!/usr/bin/env python3
+"""Generates BrazenWorks' full-colour toolbar icons (resources/icons/color/*.svg).
+
+Original artwork: shaded isometric solids, light sketch geometry and small
+coloured badges, drawn from a few primitives so the set stays consistent.
+Run from anywhere:  python3 tools/icons/make_color_icons.py
+"""
+import math
+import os
+
+OUT = os.path.join(os.path.dirname(__file__), "..", "..", "resources", "icons", "color")
+
+# Palettes: top / left / right faces and outline.
+BLUE = dict(top="#9BD1F8", left="#4A9BE0", right="#2F72BA", line="#1C4E85")
+GREY = dict(top="#F3F5F7", left="#CDD3DA", right="#A6AFB9", line="#56616C")
+ORANGE = dict(top="#FFD08A", left="#F5A23A", right="#D97F17", line="#8A4A08")
+PURPLE = dict(top="#D4BCF7", left="#9B6BE0", right="#7347BA", line="#46247A")
+GREEN = "#3DBB4F"
+RED = "#E5484D"
+AMBER = "#F39A2B"
+POINT = "#4FA3F7"
+INK = "#E9EDF1"  # light line work (icons sit on a dark ribbon)
+INK_DIM = "#9AA4AE"
+
+
+class Icon:
+    def __init__(self, name):
+        self.name = name
+        self.parts = []
+        self.defs = []
+        self.n = 0
+
+    def uid(self, tag):
+        self.n += 1
+        return f"{self.name}-{tag}{self.n}"
+
+    def add(self, s):
+        self.parts.append(s)
+
+    def save(self):
+        svg = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">']
+        if self.defs:
+            svg.append("<defs>" + "".join(self.defs) + "</defs>")
+        svg += self.parts
+        svg.append("</svg>\n")
+        with open(os.path.join(OUT, self.name + ".svg"), "w") as f:
+            f.write("".join(svg))
+
+
+# ---- Isometric projection ----------------------------------------------------
+class Iso:
+    """x to the right-down, y to the left-down, z up."""
+
+    def __init__(self, ox=16, oy=18, s=1.0):
+        self.ox, self.oy, self.s = ox, oy, s
+
+    def p(self, x, y, z=0.0):
+        return (self.ox + (x - y) * 0.866 * self.s, self.oy + (x + y) * 0.5 * self.s - z * self.s)
+
+
+def pts(points):
+    return " ".join(f"{x:.2f},{y:.2f}" for x, y in points)
+
+
+def poly(ic, points, fill, stroke="none", sw=0.8, extra=""):
+    ic.add(f'<polygon points="{pts(points)}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}" '
+           f'stroke-linejoin="round" {extra}/>')
+
+
+def line(ic, points, stroke=INK, sw=1.6, dash=None, cap="round"):
+    d = f' stroke-dasharray="{dash}"' if dash else ""
+    ic.add(f'<polyline points="{pts(points)}" fill="none" stroke="{stroke}" stroke-width="{sw}" '
+           f'stroke-linecap="{cap}" stroke-linejoin="round"{d}/>')
+
+
+def path(ic, d, fill="none", stroke=INK, sw=1.6, extra=""):
+    ic.add(f'<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}" stroke-linecap="round" '
+           f'stroke-linejoin="round" {extra}/>')
+
+
+def box(ic, iso, x, y, z, w, d, h, c=BLUE, sw=0.8):
+    p = iso.p
+    top = [p(x, y, z + h), p(x + w, y, z + h), p(x + w, y + d, z + h), p(x, y + d, z + h)]
+    left = [p(x, y + d, z), p(x + w, y + d, z), p(x + w, y + d, z + h), p(x, y + d, z + h)]
+    right = [p(x + w, y, z), p(x + w, y + d, z), p(x + w, y + d, z + h), p(x + w, y, z + h)]
+    poly(ic, left, c["left"], c["line"], sw)
+    poly(ic, right, c["right"], c["line"], sw)
+    poly(ic, top, c["top"], c["line"], sw)
+    return top, left, right
+
+
+def cylinder(ic, iso, cx, cy, z, r, h, c=BLUE, sw=0.8, top_fill=None):
+    """Vertical cylinder; returns the top ellipse (cx, cy, rx, ry)."""
+    bx, by = iso.p(cx, cy, z)
+    tx, ty = iso.p(cx, cy, z + h)
+    rx, ry = 1.2247 * r * iso.s, 0.7071 * r * iso.s
+    g = ic.uid("g")
+    ic.defs.append(f'<linearGradient id="{g}" x1="0" x2="1" y1="0" y2="0">'
+                   f'<stop offset="0" stop-color="{c["left"]}"/><stop offset="0.45" stop-color="{c["top"]}"/>'
+                   f'<stop offset="1" stop-color="{c["right"]}"/></linearGradient>')
+    path(ic, f"M{bx - rx:.2f},{by:.2f} A{rx:.2f},{ry:.2f} 0 0 0 {bx + rx:.2f},{by:.2f} L{tx + rx:.2f},{ty:.2f} "
+             f"L{tx - rx:.2f},{ty:.2f} Z", fill=f"url(#{g})", stroke=c["line"], sw=sw)
+    ic.add(f'<ellipse cx="{tx:.2f}" cy="{ty:.2f}" rx="{rx:.2f}" ry="{ry:.2f}" fill="{top_fill or c["top"]}" '
+           f'stroke="{c["line"]}" stroke-width="{sw}"/>')
+    return tx, ty, rx, ry
+
+
+def plane(ic, iso, x, y, z, w, d, fill="#C9D3DC", stroke="#7D8A96", opacity=0.9):
+    p = iso.p
+    poly(ic, [p(x, y, z), p(x + w, y, z), p(x + w, y + d, z), p(x, y + d, z)], fill, stroke, 0.8,
+         f'fill-opacity="{opacity}"')
+
+
+def badge(ic, x, y, kind="plus", color=GREEN, r=4.6):
+    ic.add(f'<circle cx="{x}" cy="{y}" r="{r}" fill="{color}" stroke="#14532D" stroke-width="0.7"/>')
+    if kind == "plus":
+        ic.add(f'<path d="M{x - 2.4},{y}H{x + 2.4}M{x},{y - 2.4}V{y + 2.4}" stroke="#fff" stroke-width="1.7" '
+               f'stroke-linecap="round"/>')
+    elif kind == "play":
+        poly(ic, [(x - 1.5, y - 2.4), (x + 2.6, y), (x - 1.5, y + 2.4)], "#fff")
+
+
+def arrow(ic, x0, y0, x1, y1, color=AMBER, sw=2.0, head=3.6):
+    a = math.atan2(y1 - y0, x1 - x0)
+    hx, hy = x1 - head * math.cos(a), y1 - head * math.sin(a)
+    line(ic, [(x0, y0), (hx, hy)], color, sw)
+    l = (x1 - head * math.cos(a) + head * 0.6 * math.cos(a + math.pi / 2),
+         y1 - head * math.sin(a) + head * 0.6 * math.sin(a + math.pi / 2))
+    r = (x1 - head * math.cos(a) - head * 0.6 * math.cos(a + math.pi / 2),
+         y1 - head * math.sin(a) - head * 0.6 * math.sin(a + math.pi / 2))
+    poly(ic, [(x1, y1), l, r], color, color, 0.6)
+
+
+def pt(ic, x, y, color=POINT, s=3.0):
+    ic.add(f'<rect x="{x - s / 2:.2f}" y="{y - s / 2:.2f}" width="{s}" height="{s}" fill="{color}" '
+           f'stroke="#0F2C4D" stroke-width="0.6"/>')
+
+
+def mark(ic, text, x, y, color=AMBER, size=9):
+    ic.add(f'<text x="{x}" y="{y}" font-family="Segoe UI, Arial, sans-serif" font-size="{size}" '
+           f'font-weight="700" fill="{color}" text-anchor="middle">{text}</text>')
+
+
+ICONS = {}
+
+
+def icon(name):
+    def wrap(fn):
+        ICONS[name] = fn
+        return fn
+    return wrap
+
+
+# ---- Design: create ------------------------------------------------------------
+@icon("sketch")
+def _(ic):
+    iso = Iso(15, 19, 1.0)
+    plane(ic, iso, -8, -8, 0, 16, 16, "#DDE4EA", "#8794A0")
+    path(ic, "M9,21 C11,13 17,11 22,15", stroke=AMBER, sw=1.8)
+    line(ic, [(9, 21), (19, 23)], "#2F3A45", 1.4)
+    for x, y in ((9, 21), (22, 15), (19, 23)):
+        pt(ic, x, y)
+    badge(ic, 25, 8)
+
+
+@icon("box")
+def _(ic):
+    box(ic, Iso(16, 17, 1.0), -6, -6, -3, 12, 12, 10)
+
+
+@icon("extrude")
+def _(ic):
+    iso = Iso(15, 19, 1.0)
+    plane(ic, iso, -8, -8, -3, 15, 15, "#DDE4EA", "#8794A0")
+    box(ic, iso, -5, -5, -3, 9, 9, 9)
+    arrow(ic, 26, 22, 26, 6)
+
+
+@icon("revolve")
+def _(ic):
+    iso = Iso(15, 18, 1.0)
+    cylinder(ic, iso, 0, 0, -5, 6.5, 11)
+    line(ic, [(15, 2), (15, 30)], "#2F3A45", 1.0, "2 1.6")
+    path(ic, "M7,7 A10,4 0 1 0 24,6", stroke=AMBER, sw=1.9)
+    poly(ic, [(24.5, 3.3), (26, 7.5), (21.8, 7)], AMBER)
+
+
+@icon("sweep")
+def _(ic):
+    path(ic, "M5,26 C5,14 15,18 16,10 C17,4 24,5 27,6", stroke=BLUE["line"], sw=7.5)
+    path(ic, "M5,26 C5,14 15,18 16,10 C17,4 24,5 27,6", stroke=BLUE["left"], sw=5.8)
+    path(ic, "M4.4,25 C4.6,15 14,17.4 15.2,9.6", stroke=BLUE["top"], sw=1.6)
+    ic.add('<ellipse cx="5" cy="27" rx="3.6" ry="1.8" fill="#9BD1F8" stroke="#1C4E85" stroke-width="0.8"/>')
+
+
+@icon("loft")
+def _(ic):
+    iso = Iso(16, 17, 1.0)
+    p = iso.p
+    # Square base to round top.
+    plane(ic, iso, -6, -6, -6, 12, 12, BLUE["left"], BLUE["line"], 1.0)
+    path(ic, f"M{p(-6, 6, -6)[0]:.1f},{p(-6, 6, -6)[1]:.1f} L11,9 A5,2.8 0 0 0 21,9 "
+             f"L{p(6, -6, -6)[0]:.1f},{p(6, -6, -6)[1]:.1f} L{p(6, 6, -6)[0]:.1f},{p(6, 6, -6)[1]:.1f} Z",
+         fill=BLUE["left"], stroke=BLUE["line"], sw=0.8)
+    path(ic, f"M21,9 L{p(6, -6, -6)[0]:.1f},{p(6, -6, -6)[1]:.1f} L{p(6, 6, -6)[0]:.1f},{p(6, 6, -6)[1]:.1f} "
+             f"L16,11.8 Z", fill=BLUE["right"], stroke=BLUE["line"], sw=0.8)
+    ic.add('<ellipse cx="16" cy="9" rx="5" ry="2.8" fill="#9BD1F8" stroke="#1C4E85" stroke-width="0.8"/>')
+
+
+@icon("hole")
+def _(ic):
+    iso = Iso(16, 18, 1.0)
+    box(ic, iso, -7, -7, -4, 14, 14, 7, GREY)
+    cx, cy = iso.p(0, 0, 3)
+    ic.add(f'<ellipse cx="{cx}" cy="{cy}" rx="4.6" ry="2.6" fill="#1D2329" stroke="#2F72BA" stroke-width="1.2"/>')
+    path(ic, f"M{cx - 4.6},{cy} A4.6,2.6 0 0 0 {cx + 4.6},{cy}", stroke="#4A9BE0", sw=1.2)
+    line(ic, [(cx, 2), (cx, cy - 3.5)], AMBER, 1.8)
+    poly(ic, [(cx, cy - 1.2), (cx - 2.2, cy - 4.4), (cx + 2.2, cy - 4.4)], AMBER)
+
+
+# ---- Design: modify ------------------------------------------------------------
+@icon("press-pull")
+def _(ic):
+    iso = Iso(16, 20, 1.0)
+    box(ic, iso, -7, -7, -4, 14, 14, 5, GREY)
+    box(ic, iso, -4, -4, 1, 8, 8, 4, BLUE)
+    arrow(ic, 25, 18, 25, 5)
+    arrow(ic, 25, 14, 25, 28, AMBER, 1.6, 3.0)
+
+
+@icon("fillet")
+def _(ic):
+    iso = Iso(15, 18, 1.0)
+    box(ic, iso, -6, -6, -5, 12, 12, 10, GREY)
+    p = iso.p
+    a, b, c = p(6, -6, 5), p(6, 6, 5), p(6, 6, 2)
+    path(ic, f"M{p(3, -6, 5)[0]:.1f},{p(3, -6, 5)[1]:.1f} L{p(3, 6, 5)[0]:.1f},{p(3, 6, 5)[1]:.1f} "
+             f"Q{b[0]:.1f},{b[1]:.1f} {c[0]:.1f},{c[1]:.1f} L{p(6, -6, 2)[0]:.1f},{p(6, -6, 2)[1]:.1f} "
+             f"Q{a[0]:.1f},{a[1]:.1f} {p(3, -6, 5)[0]:.1f},{p(3, -6, 5)[1]:.1f} Z",
+         fill=BLUE["left"], stroke=BLUE["line"], sw=0.9)
+
+
+@icon("chamfer")
+def _(ic):
+    iso = Iso(15, 18, 1.0)
+    box(ic, iso, -6, -6, -5, 12, 12, 10, GREY)
+    p = iso.p
+    poly(ic, [p(3, -6, 5), p(3, 6, 5), p(6, 6, 2), p(6, -6, 2)], BLUE["left"], BLUE["line"], 0.9)
+
+
+@icon("shell")
+def _(ic):
+    iso = Iso(16, 18, 1.0)
+    box(ic, iso, -7, -7, -5, 14, 14, 9, GREY)
+    p = iso.p
+    poly(ic, [p(-5, -5, 4), p(5, -5, 4), p(5, 5, 4), p(-5, 5, 4)], "#3A4550", GREY["line"], 0.8)
+    poly(ic, [p(-5, -5, 4), p(5, -5, 4), p(5, -5, -2), p(-5, -5, -2)], BLUE["right"], BLUE["line"], 0.6)
+    poly(ic, [p(-5, -5, 4), p(-5, 5, 4), p(-5, 5, -2), p(-5, -5, -2)], BLUE["left"], BLUE["line"], 0.6)
+
+
+@icon("combine")
+def _(ic):
+    box(ic, Iso(13, 20, 0.9), -6, -6, -3, 11, 11, 9, GREY)
+    box(ic, Iso(19, 17, 0.9), -5, -5, -3, 10, 10, 9, BLUE)
+
+
+# ---- Design: assemble / construct / inspect / insert / select -------------------
+@icon("joint")
+def _(ic):
+    box(ic, Iso(11, 20, 0.85), -5, -5, -4, 10, 10, 6, GREY)
+    box(ic, Iso(21, 13, 0.85), -5, -5, -4, 10, 10, 6, PURPLE)
+    ic.add('<circle cx="16" cy="17" r="4.2" fill="none" stroke="#F39A2B" stroke-width="1.8"/>')
+    ic.add('<circle cx="16" cy="17" r="1.4" fill="#F39A2B"/>')
+
+
+@icon("plane")
+def _(ic):
+    iso = Iso(16, 19, 1.0)
+    plane(ic, iso, -8, -8, -4, 16, 16, "#C9D3DC", "#7D8A96", 0.8)
+    plane(ic, iso, -8, -8, 4, 16, 16, ORANGE["top"], ORANGE["right"], 0.85)
+    arrow(ic, 27, 22, 27, 9, POINT, 1.6, 3.0)
+
+
+@icon("axis")
+def _(ic):
+    iso = Iso(16, 19, 1.0)
+    cylinder(ic, iso, 0, 0, -6, 5, 10, GREY)
+    line(ic, [(16, 2), (16, 30)], AMBER, 1.8)
+
+
+@icon("measure")
+def _(ic):
+    ic.add('<g transform="rotate(-35 16 16)"><rect x="3" y="12" width="26" height="8" rx="1" fill="#F2C94C" '
+           'stroke="#8A6A10" stroke-width="0.8"/>'
+           + "".join(f'<path d="M{5 + i * 3},12v{3 if i % 2 else 5}" stroke="#5A4508" stroke-width="0.9"/>'
+                     for i in range(8)) + "</g>")
+
+
+@icon("insert")
+def _(ic):
+    box(ic, Iso(17, 21, 0.9), -6, -6, -4, 12, 12, 8, GREY)
+    arrow(ic, 6, 4, 14, 12, GREEN, 2.2, 4.0)
+
+
+@icon("select")
+def _(ic):
+    ic.add('<rect x="4" y="4" width="20" height="20" fill="none" stroke="#9AA4AE" stroke-width="1.1" '
+           'stroke-dasharray="2.2 1.8"/>')
+    poly(ic, [(14, 11), (14, 27), (18, 23), (21, 29), (23.5, 28), (20.6, 22.2), (26, 22)], "#FFFFFF",
+         "#20262C", 1.0)
+
+
+# ---- Sketch tools (flat) -------------------------------------------------------
+@icon("line")
+def _(ic):
+    line(ic, [(7, 25), (25, 7)])
+    pt(ic, 7, 25)
+    pt(ic, 25, 7)
+
+
+@icon("rectangle")
+def _(ic):
+    ic.add(f'<rect x="6" y="9" width="20" height="14" fill="#4A9BE0" fill-opacity="0.18" stroke="{INK}" '
+           'stroke-width="1.6"/>')
+    pt(ic, 6, 23)
+    pt(ic, 26, 9)
+
+
+@icon("circle")
+def _(ic):
+    ic.add(f'<circle cx="16" cy="16" r="10" fill="#4A9BE0" fill-opacity="0.18" stroke="{INK}" stroke-width="1.6"/>')
+    pt(ic, 16, 16)
+    line(ic, [(16, 16), (23.1, 8.9)], INK_DIM, 1.0, "1.6 1.4")
+
+
+@icon("arc")
+def _(ic):
+    path(ic, "M5,23 A12,12 0 0 1 27,23")
+    for x, y in ((5, 23), (27, 23), (16, 11.9)):
+        pt(ic, x, y)
+
+
+@icon("point")
+def _(ic):
+    line(ic, [(16, 6), (16, 12)], INK_DIM, 1.2)
+    line(ic, [(16, 20), (16, 26)], INK_DIM, 1.2)
+    line(ic, [(6, 16), (12, 16)], INK_DIM, 1.2)
+    line(ic, [(20, 16), (26, 16)], INK_DIM, 1.2)
+    pt(ic, 16, 16, POINT, 4.2)
+
+
+@icon("construction")
+def _(ic):
+    line(ic, [(6, 26), (26, 6)], AMBER, 1.8, "3 2.4")
+    pt(ic, 6, 26)
+    pt(ic, 26, 6)
+
+
+@icon("close")
+def _(ic):
+    line(ic, [(9, 9), (23, 23)], RED, 3.0)
+    line(ic, [(23, 9), (9, 23)], RED, 3.0)
+
+
+def constraint(name, draw):
+    ICONS[name] = draw
+
+
+def _coincident(ic):
+    line(ic, [(5, 22), (16, 15)])
+    line(ic, [(27, 22), (16, 15)])
+    ic.add(f'<circle cx="16" cy="15" r="3.6" fill="none" stroke="{AMBER}" stroke-width="1.6"/>')
+    pt(ic, 16, 15, POINT, 3.2)
+
+
+def _horizontal(ic):
+    line(ic, [(5, 18), (27, 18)])
+    pt(ic, 5, 18)
+    pt(ic, 27, 18)
+    mark(ic, "H", 16, 13)
+
+
+def _vertical(ic):
+    line(ic, [(13, 5), (13, 27)])
+    pt(ic, 13, 5)
+    pt(ic, 13, 27)
+    mark(ic, "V", 22, 19)
+
+
+def _parallel(ic):
+    line(ic, [(5, 21), (19, 7)])
+    line(ic, [(13, 27), (27, 13)])
+    path(ic, "M20,22 l3,-3 M22.5,24.5 l3,-3", stroke=AMBER, sw=1.6)
+
+
+def _perpendicular(ic):
+    line(ic, [(6, 26), (26, 26)])
+    line(ic, [(12, 26), (12, 5)])
+    path(ic, "M12,20 h6 v6", stroke=AMBER, sw=1.6)
+
+
+def _tangent(ic):
+    ic.add(f'<circle cx="16" cy="18" r="7.5" fill="none" stroke="{INK}" stroke-width="1.6"/>')
+    line(ic, [(4, 10.5), (28, 10.5)], AMBER, 1.8)
+
+
+def _equal(ic):
+    line(ic, [(5, 9), (19, 9)])
+    line(ic, [(13, 23), (27, 23)])
+    path(ic, "M11,15 h10 M11,18 h10", stroke=AMBER, sw=1.6)
+
+
+def _midpoint(ic):
+    line(ic, [(5, 25), (27, 7)])
+    pt(ic, 5, 25)
+    pt(ic, 27, 7)
+    ic.add(f'<path d="M16,11 l4,5 -4,5 -4,-5 Z" fill="{AMBER}" stroke="#7A3E06" stroke-width="0.7"/>')
+
+
+def _concentric(ic):
+    ic.add(f'<circle cx="16" cy="16" r="10" fill="none" stroke="{INK}" stroke-width="1.6"/>')
+    ic.add(f'<circle cx="16" cy="16" r="5" fill="none" stroke="{INK}" stroke-width="1.6"/>')
+    ic.add(f'<circle cx="16" cy="16" r="1.8" fill="{AMBER}"/>')
+
+
+def _collinear(ic):
+    line(ic, [(4, 22), (12, 18)])
+    line(ic, [(20, 14), (28, 10)])
+    line(ic, [(12, 18), (20, 14)], AMBER, 1.6, "1.8 1.8")
+
+
+def _symmetric(ic):
+    line(ic, [(16, 3), (16, 29)], AMBER, 1.4, "2.2 1.8")
+    pt(ic, 8, 16)
+    pt(ic, 24, 16)
+    path(ic, "M11,12 l-3,4 3,4 M21,12 l3,4 -3,4", stroke=INK, sw=1.4)
+
+
+def _fix(ic):
+    ic.add(f'<rect x="9" y="14" width="14" height="11" rx="2" fill="{AMBER}" stroke="#7A3E06" stroke-width="0.8"/>')
+    path(ic, "M12,14 v-3 a4,4 0 0 1 8,0 v3", stroke=INK, sw=1.8)
+    ic.add('<circle cx="16" cy="19.5" r="1.5" fill="#3A2105"/>')
+
+
+def _dimension(ic):
+    line(ic, [(5, 8), (5, 24)], INK_DIM, 1.2)
+    line(ic, [(27, 8), (27, 24)], INK_DIM, 1.2)
+    line(ic, [(7, 16), (25, 16)], POINT, 1.5)
+    poly(ic, [(5.5, 16), (10, 13.4), (10, 18.6)], POINT)
+    poly(ic, [(26.5, 16), (22, 13.4), (22, 18.6)], POINT)
+    mark(ic, "1.5", 16, 12, INK, 7.5)
+
+
+for n, f in [("coincident", _coincident), ("horizontal", _horizontal), ("vertical", _vertical),
+             ("parallel", _parallel), ("perpendicular", _perpendicular), ("tangent", _tangent),
+             ("equal", _equal), ("midpoint", _midpoint), ("concentric", _concentric),
+             ("collinear", _collinear), ("symmetric", _symmetric), ("fix", _fix), ("dimension", _dimension)]:
+    constraint(n, f)
+
+
+# ---- Manufacture -----------------------------------------------------------------
+def stock(ic, iso, c=GREY, h=7):
+    return box(ic, iso, -8, -8, -4, 16, 16, h, c)
+
+
+def toolpath(ic, d, color=GREEN, sw=1.3):
+    path(ic, d, stroke=color, sw=sw)
+
+
+@icon("setup")
+def _(ic):
+    iso = Iso(16, 19, 0.95)
+    stock(ic, iso)
+    o = iso.p(-8, -8, 3)
+    line(ic, [o, iso.p(4, -8, 3)], RED, 1.8)
+    line(ic, [o, iso.p(-8, 4, 3)], "#3DBB4F", 1.8)
+    line(ic, [o, (o[0], o[1] - 11)], "#3E7CF0", 1.8)
+
+
+@icon("face")
+def _(ic):
+    iso = Iso(16, 19, 0.95)
+    stock(ic, iso)
+    p = iso.p
+    d = "M" + " L".join(f"{p(-7, y, 3)[0]:.1f},{p(-7, y, 3)[1]:.1f} {p(7, y, 3)[0]:.1f},{p(7, y, 3)[1]:.1f}"
+                        if i % 2 == 0 else
+                        f"{p(7, y, 3)[0]:.1f},{p(7, y, 3)[1]:.1f} {p(-7, y, 3)[0]:.1f},{p(-7, y, 3)[1]:.1f}"
+                        for i, y in enumerate(range(-6, 8, 3)))
+    toolpath(ic, d)
+
+
+@icon("adaptive")
+def _(ic):
+    iso = Iso(16, 19, 0.95)
+    stock(ic, iso)
+    cx, cy = iso.p(0, 0, 3)
+    d = f"M{cx},{cy}" + "".join(
+        f" L{cx + (1 + t * 0.5) * math.cos(t) * 1.2:.1f},{cy + (1 + t * 0.5) * math.sin(t) * 0.7:.1f}"
+        for t in [i * 0.35 for i in range(1, 34)])
+    toolpath(ic, d)
+
+
+@icon("contour")
+def _(ic):
+    iso = Iso(16, 19, 0.95)
+    box(ic, iso, -5, -5, -4, 10, 10, 7, BLUE)
+    p = iso.p
+    q = [p(-7, -7, -1), p(7, -7, -1), p(7, 7, -1), p(-7, 7, -1), p(-7, -7, -1)]
+    line(ic, q, GREEN, 1.4)
+
+
+@icon("pocket")
+def _(ic):
+    iso = Iso(16, 19, 0.95)
+    stock(ic, iso)
+    p = iso.p
+    poly(ic, [p(-5, -5, 3), p(5, -5, 3), p(5, 5, 3), p(-5, 5, 3)], "#3A4550", GREY["line"], 0.7)
+    line(ic, [p(-3, -3, 3), p(3, -3, 3), p(3, 3, 3), p(-3, 3, 3), p(-3, -1, 3), p(1, -1, 3), p(1, 1, 3)],
+         GREEN, 1.2)
+
+
+@icon("slot")
+def _(ic):
+    iso = Iso(16, 19, 0.95)
+    stock(ic, iso)
+    p = iso.p
+    a, b = p(-5, 0, 3), p(5, 0, 3)
+    line(ic, [a, b], "#1D2329", 4.2)
+    line(ic, [a, b], GREEN, 1.3)
+
+
+@icon("engrave")
+def _(ic):
+    iso = Iso(16, 19, 0.95)
+    stock(ic, iso)
+    p = iso.p
+    line(ic, [p(-5, 4, 3), p(-2, -4, 3), p(1, 4, 3), p(4, -4, 3), p(6, 2, 3)], GREEN, 1.4)
+
+
+@icon("cam-parallel")
+def _(ic):
+    path(ic, "M4,24 C10,14 22,14 28,24 Z", fill=GREY["left"], stroke=GREY["line"], sw=0.8)
+    for i in range(5):
+        x = 8 + i * 4
+        path(ic, f"M{x},{24 - (3 if i in (0, 4) else 6)} v{3 if i in (0, 4) else 6}", stroke=GREEN, sw=1.2)
+
+
+@icon("scallop")
+def _(ic):
+    path(ic, "M4,25 C8,12 24,12 28,25 Z", fill=GREY["left"], stroke=GREY["line"], sw=0.8)
+    for r in (3, 6, 9):
+        path(ic, f"M{16 - r},24 A{r},{r * 0.75} 0 0 1 {16 + r},24", stroke=GREEN, sw=1.2)
+
+
+@icon("drill")
+def _(ic):
+    iso = Iso(16, 21, 0.9)
+    stock(ic, iso, GREY, 5)
+    cx, cy = iso.p(0, 0, 1)
+    ic.add(f'<ellipse cx="{cx}" cy="{cy}" rx="3" ry="1.7" fill="#1D2329"/>')
+    poly(ic, [(cx - 2, 3), (cx + 2, 3), (cx + 2, cy - 5), (cx, cy - 2), (cx - 2, cy - 5)], "#C9D3DC", "#56616C", 0.8)
+    path(ic, f"M{cx - 2},7 l4,3 M{cx - 2},11 l4,3", stroke="#56616C", sw=0.9)
+
+
+@icon("simulate")
+def _(ic):
+    box(ic, Iso(14, 19, 0.9), -7, -7, -4, 14, 14, 8, GREY)
+    badge(ic, 23, 22, "play", "#3E7CF0", 6)
+
+
+@icon("post")
+def _(ic):
+    poly(ic, [(7, 4), (20, 4), (25, 9), (25, 28), (7, 28)], "#F3F5F7", "#56616C", 0.9)
+    poly(ic, [(20, 4), (20, 9), (25, 9)], "#CDD3DA", "#56616C", 0.8)
+    for i, w in enumerate((10, 13, 8, 12)):
+        line(ic, [(10, 13 + i * 3.5), (10 + w, 13 + i * 3.5)], "#4A9BE0" if i == 0 else "#7D8A96", 1.4)
+    badge(ic, 24, 24, "plus", GREEN, 4.4)
+
+
+@icon("library")
+def _(ic):
+    for i, x in enumerate((8, 16, 24)):
+        ic.add(f'<rect x="{x - 2.5}" y="4" width="5" height="10" rx="0.8" fill="#C9D3DC" stroke="#56616C" '
+               f'stroke-width="0.7"/>')
+        poly(ic, [(x - 2.2, 14), (x + 2.2, 14), (x + 2.2, 24 - i), (x, 27 - i), (x - 2.2, 24 - i)],
+             ["#F2C94C", "#4A9BE0", "#9B6BE0"][i], "#30363C", 0.7)
+
+
+# ---- Browser ---------------------------------------------------------------------
+@icon("folder")
+def _(ic):
+    path(ic, "M3,9 h9 l2,2.5 h15 v15 h-26 Z", fill="#F2C94C", stroke="#8A6A10", sw=0.9)
+    path(ic, "M3,13 h26 v13.5 h-26 Z", fill="#F7D978", stroke="#8A6A10", sw=0.9)
+
+
+@icon("body")
+def _(ic):
+    box(ic, Iso(16, 17, 1.0), -6, -6, -3, 12, 12, 10, GREY)
+
+
+@icon("component")
+def _(ic):
+    iso = Iso(16, 17, 1.0)
+    box(ic, iso, -6, -6, -3, 12, 12, 10, dict(GREY, top="#FFFFFF"))
+    p = iso.p
+    line(ic, [p(-6, 6, 7), p(-6, -6, 7), p(6, -6, 7)], "#3E7CF0", 1.4)
+
+
+@icon("origin")
+def _(ic):
+    o = (12, 20)
+    line(ic, [o, (27, 20)], RED, 1.8)
+    line(ic, [o, (12, 5)], "#3E7CF0", 1.8)
+    line(ic, [o, (4, 27)], "#3DBB4F", 1.8)
+    ic.add('<circle cx="12" cy="20" r="2.2" fill="#F3F5F7" stroke="#56616C" stroke-width="0.8"/>')
+
+
+@icon("settings")
+def _(ic):
+    ic.add('<g fill="#C9D3DC" stroke="#56616C" stroke-width="0.8">' + "".join(
+        f'<rect x="14" y="3" width="4" height="7" rx="1" transform="rotate({a} 16 16)"/>' for a in range(0, 360, 45))
+        + '<circle cx="16" cy="16" r="8"/></g><circle cx="16" cy="16" r="3" fill="#2B3138"/>')
+
+
+@icon("units")
+def _(ic):
+    ic.add('<g transform="rotate(-35 16 16)"><rect x="3" y="12" width="26" height="8" rx="1" fill="#F2C94C" '
+           'stroke="#8A6A10" stroke-width="0.8"/>'
+           + "".join(f'<path d="M{5 + i * 3},12v{3 if i % 2 else 5}" stroke="#5A4508" stroke-width="0.9"/>'
+                     for i in range(8)) + "</g>")
+
+
+# The light theme gets the same art with dark line work instead of light.
+LIGHT_SWAPS = {INK: "#2B3138", INK_DIM: "#6B7480"}
+
+
+def main():
+    os.makedirs(OUT, exist_ok=True)
+    light_out = OUT + "-light"
+    os.makedirs(light_out, exist_ok=True)
+    for name, fn in ICONS.items():
+        ic = Icon(name)
+        fn(ic)
+        ic.save()
+        with open(os.path.join(OUT, name + ".svg")) as f:
+            svg = f.read()
+        for a, b in LIGHT_SWAPS.items():
+            svg = svg.replace(a, b)
+        with open(os.path.join(light_out, name + ".svg"), "w") as f:
+            f.write(svg)
+    print(f"wrote {len(ICONS)} icons (dark and light) to {os.path.normpath(OUT)}[-light]")
+
+
+if __name__ == "__main__":
+    main()

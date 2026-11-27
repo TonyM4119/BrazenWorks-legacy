@@ -5,6 +5,7 @@
 
 #include "sketch/SketchEditor.h"
 
+#include <QHash>
 #include <QMainWindow>
 #include <QPointer>
 
@@ -16,6 +17,7 @@ class DocumentBar;
 class FloatingPanel;
 class NavBar;
 class PlanePicker;
+class QTreeWidgetItem;
 class ProfilePicker;
 class QMenu;
 class QTreeWidget;
@@ -61,14 +63,23 @@ class MainWindow : public QMainWindow {
 
   void exportStep();
   void showAbout();
+  void openPreferences();
+  void applyPreferences();
+  void buildHelpMenu();
+  void showShortcuts();
+  void showDiagnostics();
 
   // Sketching.
   void openCreateSketch();
   void createSketch(model::OriginPlaneKind plane);
   void enterSketch(std::uint64_t sketch);
   void finishSketch();
+  void cancelSketch();
   void onSketchTool(const QString& id);
   void showSketches();
+  void showOrigin();
+  bool sketchVisible(std::uint64_t id) const;
+  void toggleBrowserVisibility(QTreeWidgetItem* item);
   QVector<std::uint64_t> sketchIds(bool unconsumedOnly) const;
 
   // Extrude from sketch profiles.
@@ -96,6 +107,9 @@ class MainWindow : public QMainWindow {
   QPointer<CommandDialog> dialog_;
 
   std::unique_ptr<SketchEditor> sketchEditor_;
+  QPointer<FloatingPanel> sketchPanel_;
+  std::unique_ptr<rust::Box<model::Timeline>> sketchEntry_;  // state to restore on Cancel Sketch
+  std::size_t sketchUndoDepth_ = 0;
   std::unique_ptr<PlanePicker> planePicker_;
   std::unique_ptr<ProfilePicker> profilePicker_;
   long sketchReturnMarker_ = -1;  // marker to restore after editing an older sketch
@@ -103,4 +117,7 @@ class MainWindow : public QMainWindow {
   std::vector<rust::Box<model::Timeline>> undo_;
   std::vector<rust::Box<model::Timeline>> redo_;
   QString permanentStatus_;
+  QHash<std::uint64_t, bool> sketchVisibility_;  // user overrides (default: shown until used)
+  bool sketchesShown_ = true;                     // the Sketches folder's eye
+  bool originShown_ = false;
 };
