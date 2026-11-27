@@ -2,17 +2,25 @@
 
 #include "Kernel.h"
 #include "Settings.h"
+#include "SketchTools.h"
 #include "Theme.h"
 
+#include "Icons.h"
+
 #include <QKeyEvent>
+#include <QMenu>
+#include <QMessageBox>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QLineF>
 #include <QTimer>
 
+#include <TopExp_Explorer.hxx>
+
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <set>
 #include <tuple>
 
 namespace {
@@ -51,6 +59,13 @@ bool onArc(const model::SketchEntityInfo& e, double u, double v) {
   return norm2pi(a - a0) <= norm2pi(a1 - a0) + 1e-9;
 }
 
+// Eccentric-angle parameter of (x, y) on an ellipse entity.
+double ellipseParam(const model::SketchEntityInfo& e, double x, double y) {
+  const double mx = e.x1 - e.x0, my = e.y1 - e.y0, a = std::max(std::hypot(mx, my), 1e-12);
+  const double ux = mx / a, uy = my / a, dx = x - e.x0, dy = y - e.y0;
+  return std::atan2((-dx * uy + dy * ux) / std::max(e.minor, 1e-12), (dx * ux + dy * uy) / a);
+}
+
 geom::Seg2 segOf(const model::SketchEntityInfo& e) {
   geom::Seg2 s;
   switch (e.kind) {
@@ -67,11 +82,47 @@ geom::Seg2 segOf(const model::SketchEntityInfo& e) {
       s.cx = e.x0, s.cy = e.y0, s.x0 = e.x1, s.y0 = e.y1, s.x1 = e.x2, s.y1 = e.y2, s.radius = e.radius;
       s.ccw = true;
       break;
+    case EK::Ellipse:
+    case EK::EllipticalArc: {
+      s.kind = e.kind == EK::Ellipse ? geom::Seg2::Kind::Ellipse : geom::Seg2::Kind::EllipseArc;
+      s.cx = e.x0, s.cy = e.y0, s.mx = e.x1 - e.x0, s.my = e.y1 - e.y0, s.minor = e.minor;
+      if (e.kind == EK::EllipticalArc) {
+        s.t0 = ellipseParam(e, e.x2, e.y2);
+        s.t1 = ellipseParam(e, e.x3, e.y3);
+        s.x0 = e.x2, s.y0 = e.y2, s.x1 = e.x3, s.y1 = e.y3;
+        s.ccw = true;
+      }
+      break;
+    }
+    case EK::Spline:
+      s.kind = geom::Seg2::Kind::Spline;
+      s.degree = int(e.degree);
+      s.poles.assign(e.poles.begin(), e.poles.end());
+      s.knots.assign(e.knots.begin(), e.knots.end());
+      s.weights.assign(e.weights.begin(), e.weights.end());
+      break;
     default:
       break;
   }
   return s;
 }
+
+// Distance from (u,v) to a polyline of x,y pairs; `fx, fy` = the nearest spot.
+double polylineDistance(const rust::Vec<double>& xy, double u, double v, double* fx = nullptr, double* fy = nullptr) {
+  double best = 1e300;
+  for (std::size_t i = 0; i + 3 < xy.size(); i += 2) {
+    double t;
+    const double d = segmentDistance(u, v, xy[i], xy[i + 1], xy[i + 2], xy[i + 3], &t);
+    if (d < best) {
+      best = d;
+      if (fx) *fx = xy[i] + t * (xy[i + 2] - xy[i]);
+      if (fy) *fy = xy[i + 1] + t * (xy[i + 3] - xy[i + 1]);
+    }
+  }
+  return best;
+}
+
+bool usesSamples(EK k) { return k == EK::Ellipse || k == EK::EllipticalArc || k == EK::Spline; }
 
 geom::Plane geomPlane(const model::PlaneInfo& p) {
   geom::Plane g;
@@ -97,6 +148,7 @@ QString glyph(K k) {
     case K::Concentric: return "Con";
     case K::Collinear: return "Col";
     case K::Symmetric: return "Sym";
+    case K::Smooth: return "G2";
     default: return {};
   }
 }
@@ -115,6 +167,7 @@ QString kindName(K k) {
     case K::Concentric: return QObject::tr("Concentric");
     case K::Collinear: return QObject::tr("Collinear");
     case K::Symmetric: return QObject::tr("Symmetric");
+    case K::Smooth: return QObject::tr("Smooth");
     default: return QObject::tr("Constraint");
   }
 }
@@ -245,7 +298,9 @@ SketchEditor::Hit SketchEditor::hitTest(const QPointF& pos, bool pointsFirst, bo
       case EK::Arc:
         if (onArc(e, u, v)) d = std::abs(dist(u, v, e.x0, e.y0) - e.radius);
         break;
-      default: break;
+      default:
+        if (usesSamples(e.kind)) d = polylineDistance(e.samples, u, v);
+        break;
     }
     if (d < best) {
       best = d;
@@ -259,12 +314,14 @@ SketchEditor::Hit SketchEditor::hitTest(const QPointF& pos, bool pointsFirst, bo
 // Where a click lands while drawing: an existing point, the origin, a spot on a
 // curve (projected onto it), or free space.
 SketchEditor::Hit SketchEditor::snap(const QPointF& pos) const {
+  guides_.clear();
   if (!snap_) {
     Hit free;
     toPlane(pos, free.u, free.v);
     return free;
   }
   Hit h = hitTest(pos);
+  const double tol = pickPx() * unitsPerPixel();
   if (h.kind == Hit::Curve) {
     const auto* e = entity(h.id);
     if (e->kind == EK::Line) {
@@ -272,12 +329,50 @@ SketchEditor::Hit SketchEditor::snap(const QPointF& pos) const {
       segmentDistance(h.u, h.v, e->x0, e->y0, e->x1, e->y1, &t);
       h.u = e->x0 + t * (e->x1 - e->x0);
       h.v = e->y0 + t * (e->y1 - e->y0);
+      // Midpoint snap: a little stickier than the pick radius.
+      const double mx = (e->x0 + e->x1) / 2, my = (e->y0 + e->y1) / 2;
+      if (dist(h.u, h.v, mx, my) < 1.5 * tol) h.u = mx, h.v = my, h.mid = true;
+    } else if (usesSamples(e->kind)) {
+      polylineDistance(e->samples, h.u, h.v, &h.u, &h.v);
     } else {
       const double a = std::atan2(h.v - e->y0, h.u - e->x0);
       h.u = e->x0 + e->radius * std::cos(a);
       h.v = e->y0 + e->radius * std::sin(a);
     }
+    return h;
   }
+  if (h.kind != Hit::None) return h;
+
+  // Free space: line extensions first, then alignment with existing points.
+  for (const auto& e : entities_) {
+    if (e.kind != EK::Line) continue;
+    const double dx = e.x1 - e.x0, dy = e.y1 - e.y0, len2 = dx * dx + dy * dy;
+    if (len2 < 1e-18) continue;
+    const double t = ((h.u - e.x0) * dx + (h.v - e.y0) * dy) / len2;
+    if (t > 0 && t < 1) continue;  // over the line itself: hitTest would have found it
+    const double fx = e.x0 + t * dx, fy = e.y0 + t * dy;
+    if (dist(h.u, h.v, fx, fy) < 0.8 * tol) {
+      const double ex = t < 0 ? e.x0 : e.x1, ey = t < 0 ? e.y0 : e.y1;
+      h.u = fx, h.v = fy;
+      guides_.push_back({ex, ey, fx, fy});
+      return h;
+    }
+  }
+  double bestU = tol, bestV = tol;
+  double alignU = 0, alignV = 0, fromU[2] = {0, 0}, fromV[2] = {0, 0};
+  bool hasU = false, hasV = false;
+  auto consider = [&](double x, double y) {
+    if (std::abs(h.u - x) < bestU) bestU = std::abs(h.u - x), alignU = x, fromU[0] = x, fromU[1] = y, hasU = true;
+    if (std::abs(h.v - y) < bestV) bestV = std::abs(h.v - y), alignV = y, fromV[0] = x, fromV[1] = y, hasV = true;
+  };
+  for (const auto& e : entities_)
+    if (e.kind == EK::Point) consider(e.x0, e.y0);
+  consider(0, 0);
+  for (const Hit& c : clicks_) consider(c.u, c.v);
+  if (hasU) h.u = alignU;
+  if (hasV) h.v = alignV;
+  if (hasU) guides_.push_back({fromU[0], fromU[1], h.u, h.v});
+  if (hasV) guides_.push_back({fromV[0], fromV[1], h.u, h.v});
   return h;
 }
 
@@ -312,7 +407,7 @@ std::uint64_t SketchEditor::resolve(const Hit& h) {
     return p;
   }
   const std::uint64_t p = model::sketch_add_point(tl(), sketch_, h.u, h.v);
-  if (h.kind == Hit::Curve && h.id) addConstraint(K::PointOnCurve, p, h.id, 0, 0, /*quiet=*/true);
+  if (h.kind == Hit::Curve && h.id) addConstraint(h.mid ? K::Midpoint : K::PointOnCurve, p, h.id, 0, 0, /*quiet=*/true);
   reload();
   return p;
 }
@@ -326,10 +421,43 @@ bool SketchEditor::addConstraint(K kind, std::uint64_t a, std::uint64_t b, std::
 
 // ---- Modes ----------------------------------------------------------------------
 
+bool SketchEditor::isDrawing(Mode m) {
+  switch (m) {
+    case Mode::Line: case Mode::Rectangle: case Mode::Circle: case Mode::Arc: case Mode::Point:
+    case Mode::Rectangle3: case Mode::RectangleCentre: case Mode::Circle2: case Mode::Circle3:
+    case Mode::CentreArc: case Mode::TangentArc: case Mode::Polygon: case Mode::Ellipse: case Mode::Slot:
+    case Mode::Spline:
+      return true;
+    default: return false;
+  }
+}
+
+bool SketchEditor::picksCurves(Mode m) {
+  switch (m) {
+    case Mode::Offset: case Mode::Mirror: case Mode::Move: case Mode::Rotate: case Mode::Scale:
+    case Mode::PatternRect: case Mode::PatternCirc:
+      return true;
+    default: return false;
+  }
+}
+
 void SketchEditor::setMode(Mode mode) {
   closeValueEditor();
+  // Selected curves carry into the tools that work on curves.
+  std::vector<std::uint64_t> chosen;
+  if (picksCurves(mode))
+    for (std::uint64_t id : selected_)
+      if (isCurve(id)) chosen.push_back(id);
   resetDraft();
   mode_ = mode;
+  opCurves_ = chosen;
+  opStage_ = chosen.empty() ? 0 : 1;
+  bodyEdges_.clear();
+  hoverEdge_ = -1;
+  if (mode == Mode::Project && host_.body) {
+    for (TopExp_Explorer ex(host_.body(), TopAbs_EDGE); ex.More(); ex.Next()) bodyEdges_.push_back(ex.Current());
+    if (bodyEdges_.empty()) emit message(tr("There is no body to project yet."));
+  }
   if (mode != Mode::Select) {
     selected_.clear();
     selectedCon_.clear();
@@ -364,19 +492,21 @@ void SketchEditor::resetDraft() {
   clicks_.clear();
   picks_.clear();
   chainStart_ = 0;
+  opCurves_.clear();
+  opStage_ = 0;
+  guides_.clear();
 }
 
 void SketchEditor::hintForMode() {
-  switch (mode_) {
-    case Mode::Select: emit message(tr("Select geometry. Drag points to move them. Double-click a dimension to edit it.")); break;
-    case Mode::Line: emit message(tr("Line: click points. Double-click, right-click or Esc to stop.")); break;
-    case Mode::Rectangle: emit message(tr("Rectangle: click two opposite corners.")); break;
-    case Mode::Circle: emit message(tr("Circle: click the centre, then the radius.")); break;
-    case Mode::Arc: emit message(tr("3-point arc: click the start, the end, then a point on the arc.")); break;
-    case Mode::Point: emit message(tr("Point: click to place points.")); break;
-    case Mode::Dimension: emit message(tr("Dimension: pick a line, circle or arc, or two points/lines. Type a value, Enter.")); break;
-    case Mode::Constrain: emit message(tr("%1: pick the geometry.").arg(kindName(constraintKind_))); break;
+  if (mode_ == Mode::Constrain) {
+    emit message(tr("%1: pick the geometry.").arg(kindName(constraintKind_)));
+    return;
   }
+  if (picksCurves(mode_) && opStage_ == 1 && mode_ != Mode::Offset) {
+    finishPicking();  // curves came selected: go straight to the next step
+    return;
+  }
+  if (const SketchToolDef* t = sketchToolFor(mode_)) emit message(tr(t->title) + QStringLiteral(": ") + tr(t->hint));
 }
 
 void SketchEditor::toggleConstruction() {
@@ -427,6 +557,11 @@ void SketchEditor::reload() {
     profiles_.clear();
     for (const auto& p : model::sketch_profiles(tl(), sketch_)) profiles_.push_back(p);
     const model::SketchSolveInfo info = model::sketch_solve(tl(), sketch_);
+    looseEnds_.clear();
+    for (std::uint64_t id : model::sketch_loose_ends(tl(), sketch_)) looseEnds_.push_back(id);
+    const bool newlyDegenerate = !info.degenerate.empty() && degenerate_.empty();
+    degenerate_.assign(info.degenerate.begin(), info.degenerate.end());
+    if (newlyDegenerate) emit message(tr("Some curves have shrunk to nothing; check the dimensions."));
     dof_ = int(info.dof);
     conflicting_ = info.status == model::SketchSolveStatus::Conflicting || !info.conflicting.empty();
   } catch (const std::exception&) {
@@ -458,7 +593,18 @@ bool SketchEditor::mousePress(QMouseEvent* e) {
   if (valueEdit_) closeValueEditor();
 
   if (e->button() == Qt::RightButton) {
-    if (!clicks_.empty() || !picks_.empty()) {
+    if (mode_ == Mode::Select) {
+      const Hit h = hitTest(pos, true, true);
+      if (h.kind == Hit::Label) {
+        showDimensionMenu(h.id, pos);
+        return true;
+      }
+    }
+    if (mode_ == Mode::Spline && clicks_.size() >= 2) {
+      finishSpline();
+      return true;
+    }
+    if (!clicks_.empty() || !picks_.empty() || !opCurves_.empty()) {
       resetDraft();
       drawPreview();
       return true;
@@ -499,6 +645,23 @@ bool SketchEditor::mousePress(QMouseEvent* e) {
     case Mode::Point:
       clickDraw(snap(pos));
       return true;
+    case Mode::Rectangle3: case Mode::RectangleCentre: case Mode::Circle2: case Mode::Circle3:
+    case Mode::CentreArc: case Mode::TangentArc: case Mode::Polygon: case Mode::Ellipse: case Mode::Slot:
+    case Mode::Spline:
+      clickShape(snap(pos), Typed());
+      return true;
+    case Mode::Trim: case Mode::Extend: case Mode::Break: case Mode::Fillet: case Mode::Chamfer:
+    case Mode::Offset: case Mode::Mirror: case Mode::Move: case Mode::Rotate: case Mode::Scale:
+    case Mode::PatternRect: case Mode::PatternCirc: case Mode::Project: {
+      // Anchors (base point, centre) snap; curve picks don't.
+      const bool anchor = (mode_ == Mode::Move || mode_ == Mode::Rotate || mode_ == Mode::Scale ||
+                           mode_ == Mode::PatternCirc) && opStage_ >= 1;
+      const bool side = mode_ == Mode::Offset && opStage_ == 1;
+      Hit h = anchor ? snap(pos) : hitTest(pos, mode_ == Mode::Fillet || mode_ == Mode::Chamfer);
+      if (side) toPlane(pos, h.u, h.v);
+      clickModify(h, pos, e->modifiers());
+      return true;
+    }
     case Mode::Dimension:
       clickDimension(hitTest(pos, true, true), pos);
       return true;
@@ -549,9 +712,21 @@ bool SketchEditor::mouseMove(QMouseEvent* e) {
     return true;
   }
 
+  if (mode_ == Mode::Project) {
+    const int edge = edgeAt(cursor_);
+    if (edge != hoverEdge_) {
+      hoverEdge_ = edge;
+      drawHover();
+    }
+    return true;
+  }
+  const bool anchor = (mode_ == Mode::Move || mode_ == Mode::Rotate || mode_ == Mode::Scale ||
+                       mode_ == Mode::PatternCirc) && opStage_ >= 1;
   const Hit h = (mode_ == Mode::Select || mode_ == Mode::Dimension) ? hitTest(cursor_, true, true)
                 : mode_ == Mode::Constrain                          ? hitTest(cursor_)
-                                                                    : snap(cursor_);
+                : (isDrawing(mode_) || anchor)                      ? snap(cursor_)
+                                                                    : hitTest(cursor_, mode_ == Mode::Fillet ||
+                                                                                           mode_ == Mode::Chamfer);
   if (h.kind != hover_.kind || h.id != hover_.id) {
     hover_ = h;
     drawHover();
@@ -575,6 +750,11 @@ bool SketchEditor::mouseRelease(QMouseEvent* e) {
 }
 
 bool SketchEditor::mouseDoubleClick(QMouseEvent* e) {
+  if (mode_ == Mode::Spline) {
+    // The press before the double-click already added this spot.
+    finishSpline();
+    return true;
+  }
   if (mode_ == Mode::Line) {
     resetDraft();
     drawPreview();
@@ -583,7 +763,7 @@ bool SketchEditor::mouseDoubleClick(QMouseEvent* e) {
   const Hit h = hitTest(e->position(), true, true);
   if (h.kind == Hit::Label && (mode_ == Mode::Select || mode_ == Mode::Dimension)) {
     for (const auto& c : constraints_) {
-      if (c.id != h.id || !c.is_dimension) continue;
+      if (c.id != h.id || !c.is_dimension || c.driven) continue;
       PendingDimension d;
       d.existing = c.id;
       d.kind = c.kind;
@@ -614,9 +794,10 @@ bool SketchEditor::keyPress(QKeyEvent* e) {
   }
   switch (e->key()) {
     case Qt::Key_Escape:
-      if (!clicks_.empty() || !picks_.empty()) {
+      if (!clicks_.empty() || !picks_.empty() || !opCurves_.empty()) {
         resetDraft();
         drawPreview();
+        hintForMode();
       } else if (mode_ != Mode::Select) {
         setMode(Mode::Select);
       } else if (!selected_.isEmpty() || !selectedCon_.isEmpty()) {
@@ -635,8 +816,18 @@ bool SketchEditor::keyPress(QKeyEvent* e) {
     case Qt::Key_D: setMode(Mode::Dimension); return true;
     case Qt::Key_S: setMode(Mode::Select); return true;
     case Qt::Key_X: toggleConstruction(); return true;
+    case Qt::Key_T: setMode(Mode::Trim); return true;
+    case Qt::Key_O: setMode(Mode::Offset); return true;
     case Qt::Key_Return:
     case Qt::Key_Enter:
+      if (mode_ == Mode::Spline && clicks_.size() >= 2) {
+        finishSpline();
+        return true;
+      }
+      if (picksCurves(mode_) && opStage_ == 0) {
+        finishPicking();
+        return true;
+      }
       if (mode_ == Mode::Dimension && picks_.size() == 1 && picks_[0].kind == Hit::Curve) {
         clickDimension(Hit{}, hasCursor_ ? cursor_ : QPointF(view_->width() / 2.0, view_->height() / 2.0));
       }
@@ -856,13 +1047,21 @@ int SketchEditor::sizeBoxCount() const {
   if (clicks_.empty()) return 0;
   switch (mode_) {
     case Mode::Line: case Mode::Circle: return 1;
-    case Mode::Rectangle: return 2;
+    case Mode::Rectangle: case Mode::RectangleCentre: case Mode::Polygon: return 2;
+    case Mode::Slot: return clicks_.size() == 2 ? 1 : 0;
     default: return 0;
   }
 }
 
 bool SketchEditor::typedValue(int i, double& mm) {
   if (i >= 2 || !sizeEdit_[i] || !sizeTyped_[i]) return false;
+  if (mode_ == Mode::Polygon && i == 1) {  // number of sides
+    bool ok = false;
+    const int n = sizeEdit_[i]->text().trimmed().toInt(&ok);
+    if (!ok || n < 3 || n > 64) return false;
+    mm = n;
+    return true;
+  }
   const model::LengthParse p = model::length_parse(sizeEdit_[i]->text().trimmed().toStdString(), unit());
   if (!p.ok || p.mm <= 0) return false;
   mm = p.mm;
@@ -911,7 +1110,10 @@ void SketchEditor::showSizeBoxes(const double live[2], const QPointF& anchor) {
       sizeEdit_[i] = e;
     }
     QLineEdit* e = sizeEdit_[i];
-    if (!sizeTyped_[i] && !e->hasFocus()) e->setText(qs(model::length_format(live[i], unit())));
+    if (!sizeTyped_[i] && !e->hasFocus()) {
+      if (mode_ == Mode::Polygon && i == 1) e->setText(tr("%1 sides").arg(int(live[i])));
+      else e->setText(qs(model::length_format(live[i], unit())));
+    }
     QPoint at = anchor.toPoint() + QPoint(18, 14 + i * 30);
     at.setX(std::clamp(at.x(), 4, view_->width() - e->width() - 4));
     at.setY(std::clamp(at.y(), 4, view_->height() - e->height() - 4));
@@ -962,11 +1164,24 @@ SketchEditor::Hit SketchEditor::typedTarget(const Hit& first, Hit cursor, Typed&
       }
       break;
     case Mode::Rectangle:
+    case Mode::RectangleCentre: {
+      const double k = mode_ == Mode::RectangleCentre ? 0.5 : 1.0;
       for (int i = 0; i < 2; ++i) {
         if (!typed.set[i]) continue;
         double& c = i == 0 ? h.u : h.v;
         const double f = i == 0 ? first.u : first.v;
-        c = f + (c >= f ? 1 : -1) * typed.value[i];
+        c = f + (c >= f ? 1 : -1) * typed.value[i] * k;
+        h.kind = Hit::None;
+      }
+      break;
+    }
+    case Mode::Polygon:
+      if (typed.set[0]) {
+        double du = h.u - first.u, dv = h.v - first.v;
+        double len = std::hypot(du, dv);
+        if (len < 1e-9) du = 0, dv = 1, len = 1;
+        h.u = first.u + du / len * typed.value[0];
+        h.v = first.v + dv / len * typed.value[0];
         h.kind = Hit::None;
       }
       break;
@@ -988,7 +1203,8 @@ void SketchEditor::commitSizes() {
   const Hit target = typedTarget(clicks_.front(), cursor, typed);
   sizeTyped_[0] = sizeTyped_[1] = false;
   view_->setFocus();
-  clickDraw(target, typed);
+  if (mode_ == Mode::Line || mode_ == Mode::Rectangle || mode_ == Mode::Circle) clickDraw(target, typed);
+  else clickShape(target, typed);
 }
 
 // ---- Dimensions ----------------------------------------------------------------
@@ -1017,6 +1233,27 @@ double SketchEditor::measure(K kind, const Hit& a, const Hit& b) const {
       const double dx = eb->x1 - eb->x0, dy = eb->y1 - eb->y0, len = std::hypot(dx, dy);
       return len > 0 ? std::abs((x - eb->x0) * dy - (y - eb->y0) * dx) / len : 0;
     }
+    case K::MajorRadius: return ea ? ea->radius : 0;
+    case K::MinorRadius: return ea ? ea->minor : 0;
+    case K::PointCircleDistance: {
+      double x, y;
+      pt(a, x, y);
+      return eb ? std::abs(dist(x, y, eb->x0, eb->y0) - eb->radius) : 0;
+    }
+    case K::LineDistance:
+    case K::LineCircleDistance: {
+      if (!ea || !eb) return 0;
+      const double px = eb->x0, py = eb->y0;  // b's start, or its centre
+      const double dx = ea->x1 - ea->x0, dy = ea->y1 - ea->y0, len = std::hypot(dx, dy);
+      const double d = len > 0 ? std::abs((px - ea->x0) * dy - (py - ea->y0) * dx) / len : 0;
+      return kind == K::LineDistance ? d : std::abs(d - eb->radius);
+    }
+    case K::CircleDistance: {
+      if (!ea || !eb) return 0;
+      const double d = dist(ea->x0, ea->y0, eb->x0, eb->y0);
+      const double out = d - ea->radius - eb->radius, in = std::abs(ea->radius - eb->radius) - d;
+      return out > 0 ? out : in > 0 ? in : std::abs(out);
+    }
     case K::Angle: {
       if (!ea || !eb) return 0;
       const double a1 = std::atan2(ea->y1 - ea->y0, ea->x1 - ea->x0);
@@ -1033,6 +1270,10 @@ void SketchEditor::clickDimension(const Hit& h, const QPointF& pos) {
   if (h.kind == Hit::Label) {
     for (const auto& c : constraints_) {
       if (c.id != h.id || !c.is_dimension) continue;
+      if (c.driven) {
+        emit message(tr("That is a driven dimension: it follows the geometry. Right-click it to make it driving."));
+        return;
+      }
       PendingDimension d;
       d.existing = c.id;
       d.kind = c.kind;
@@ -1042,49 +1283,82 @@ void SketchEditor::clickDimension(const Hit& h, const QPointF& pos) {
     }
     return;
   }
-  const auto* e = entity(h.id);
-  if (picks_.empty() && h.kind == Hit::Curve && e && (e->kind == EK::Circle || e->kind == EK::Arc)) {
-    PendingDimension d;
-    d.kind = e->kind == EK::Circle ? K::Diameter : K::Radius;
-    d.a = h;
-    openValueEditor(d, pos, measure(d.kind, h, {}));
-    return;
-  }
+  auto kindOf = [this](const Hit& x) -> EK {
+    if (x.kind == Hit::Point || x.kind == Hit::Origin) return EK::Point;
+    const auto* e = entity(x.id);
+    return e ? e->kind : EK::Point;
+  };
+  auto pointish = [&](const Hit& x) { return kindOf(x) == EK::Point; };
+  auto isLine = [&](const Hit& x) { return kindOf(x) == EK::Line; };
+  auto isRound = [&](const Hit& x) { return kindOf(x) == EK::Circle || kindOf(x) == EK::Arc; };
+
   if (h.kind == Hit::None) {
-    // Click in space: a lone line gets its length.
+    // Click in space: a lone curve gets its own size.
     if (picks_.size() == 1 && picks_[0].kind == Hit::Curve) {
+      const Hit c = picks_[0];
+      const auto* e = entity(c.id);
       PendingDimension d;
-      d.kind = K::Length;
-      d.a = picks_[0];
-      openValueEditor(d, pos, measure(K::Length, d.a, {}));
+      d.a = c;
+      bool ok = true;
+      switch (e ? e->kind : EK::Point) {
+        case EK::Line: d.kind = K::Length; break;
+        case EK::Circle: d.kind = K::Diameter; break;
+        case EK::Arc: d.kind = K::Radius; break;
+        case EK::Ellipse:
+        case EK::EllipticalArc: {
+          // Near the ends of the major axis: the major radius; else the minor.
+          const double t = ellipseParam(*e, c.u, c.v);
+          d.kind = std::abs(std::cos(t)) >= std::abs(std::sin(t)) ? K::MajorRadius : K::MinorRadius;
+          break;
+        }
+        default:
+          ok = false;
+          emit message(tr("Splines are shaped by their points: dimension those instead."));
+          break;
+      }
+      if (ok) openValueEditor(d, pos, measure(d.kind, d.a, {}));
     }
     picks_.clear();
     drawPreview();
     return;
   }
-  if (h.kind == Hit::Curve && e && e->kind != EK::Line) {
-    emit message(tr("Circles and arcs are dimensioned on their own: click one first."));
-    return;
-  }
   picks_.push_back(h);
   if (picks_.size() < 2) {
     drawPreview();
-    if (h.kind == Hit::Curve) emit message(tr("Click empty space for the line's length, or another line/point."));
-    else emit message(tr("Pick a second point or a line."));
+    if (h.kind == Hit::Curve) emit message(tr("Click empty space to place its size, or pick another point or curve."));
+    else emit message(tr("Pick a second point or a curve."));
     return;
   }
   Hit a = picks_[0], b = picks_[1];
   picks_.clear();
-  auto pointish = [](const Hit& x) { return x.kind == Hit::Point || x.kind == Hit::Origin; };
   PendingDimension d;
+  if (pointish(b) && !pointish(a)) std::swap(a, b);  // points first
+  if (isRound(a) && isLine(b)) std::swap(a, b);     // lines before circles
   if (pointish(a) && pointish(b)) {
     d.kind = K::Distance;
-  } else if (pointish(a) != pointish(b)) {
-    if (!pointish(a)) std::swap(a, b);
+  } else if (pointish(a) && isLine(b)) {
     d.kind = K::PointLineDistance;
+  } else if (pointish(a) && isRound(b)) {
+    d.kind = K::PointCircleDistance;
+  } else if (isLine(a) && isLine(b)) {
+    const auto* ea = entity(a.id);
+    const auto* eb = entity(b.id);
+    const double cross = (ea->x1 - ea->x0) * (eb->y1 - eb->y0) - (ea->y1 - ea->y0) * (eb->x1 - eb->x0);
+    const double la = dist(ea->x0, ea->y0, ea->x1, ea->y1), lb = dist(eb->x0, eb->y0, eb->x1, eb->y1);
+    if (std::abs(cross) <= 1e-3 * la * lb) {
+      d.kind = K::LineDistance;  // parallel lines: the gap between them
+    } else {
+      d.kind = K::Angle;
+      d.angle = true;
+    }
+  } else if (isLine(a) && isRound(b)) {
+    d.kind = K::LineCircleDistance;
+  } else if (isRound(a) && isRound(b)) {
+    d.kind = K::CircleDistance;
   } else {
-    d.kind = K::Angle;
-    d.angle = true;
+    emit message(tr("Those two can't be dimensioned to each other."));
+    drawPreview();
+    return;
   }
   d.a = a, d.b = b;
   openValueEditor(d, pos, measure(d.kind, a, b));
@@ -1094,6 +1368,8 @@ void SketchEditor::clickDimension(const Hit& h, const QPointF& pos) {
 void SketchEditor::openValueEditor(const PendingDimension& d, const QPointF& pos, double currentValue) {
   closeValueEditor();
   pending_ = d;
+  valueOp_ = nullptr;
+  valueKind_ = d.angle ? ValueKind::Angle : ValueKind::Length;
   auto* edit = new QLineEdit(view_);
   edit->setObjectName("SketchValueEdit");
   if (d.angle) {
@@ -1101,6 +1377,28 @@ void SketchEditor::openValueEditor(const PendingDimension& d, const QPointF& pos
   } else {
     edit->setText(qs(model::length_format(currentValue, unit())));
   }
+  placeValueBox(edit, pos);
+  emit message(d.angle ? tr("Type an angle in degrees, Enter to apply, Esc to cancel.")
+                       : tr("Type a length (e.g. 2 1/4, 1'6\", 30mm), Enter to apply, Esc to cancel."));
+}
+
+void SketchEditor::askValue(const QString& prompt, ValueKind kind, double initial, const QPointF& pos,
+                            std::function<bool(double)> op) {
+  closeValueEditor();
+  valueKind_ = kind;
+  auto* edit = new QLineEdit(view_);
+  edit->setObjectName("SketchValueEdit");
+  switch (kind) {
+    case ValueKind::Length: edit->setText(qs(model::length_format(initial, unit()))); break;
+    case ValueKind::Angle: edit->setText(QString::number(initial * 180.0 / kPi, 'g', 6) + QStringLiteral("°")); break;
+    case ValueKind::Number: edit->setText(QString::number(initial, 'g', 6)); break;
+  }
+  placeValueBox(edit, pos);
+  valueOp_ = std::move(op);  // after placeValueBox: closing an older box clears it
+  emit message(prompt);
+}
+
+void SketchEditor::placeValueBox(QLineEdit* edit, const QPointF& pos) {
   edit->setFixedWidth(120);
   edit->adjustSize();
   QPoint at = pos.toPoint() + QPoint(12, -edit->height() - 6);
@@ -1111,10 +1409,8 @@ void SketchEditor::openValueEditor(const PendingDimension& d, const QPointF& pos
   edit->setFocus();
   edit->selectAll();
   valueEdit_ = edit;
-  emit message(d.angle ? tr("Type an angle in degrees, Enter to apply, Esc to cancel.")
-                       : tr("Type a length (e.g. 2 1/4, 1'6\", 30mm), Enter to apply, Esc to cancel."));
 
-  // Esc inside the field.
+  // Esc and Enter inside the field.
   struct EscFilter : QObject {
     SketchEditor* owner;
     explicit EscFilter(SketchEditor* o, QObject* parent) : QObject(parent), owner(o) {}
@@ -1122,7 +1418,11 @@ void SketchEditor::openValueEditor(const PendingDimension& d, const QPointF& pos
       if (ev->type() != QEvent::KeyPress) return false;
       const int key = static_cast<QKeyEvent*>(ev)->key();
       if (key == Qt::Key_Escape) {
-        QTimer::singleShot(0, owner, [o = owner] { o->closeValueEditor(); });
+        QTimer::singleShot(0, owner, [o = owner] {
+          o->closeValueEditor();
+          o->resetDraft();
+          o->drawPreview();
+        });
         return true;
       }
       if (key == Qt::Key_Return || key == Qt::Key_Enter) {
@@ -1142,6 +1442,7 @@ void SketchEditor::closeValueEditor() {
     valueEdit_->deleteLater();
   }
   valueEdit_ = nullptr;
+  valueOp_ = nullptr;
   if (view_) view_->setFocus();
 }
 
@@ -1149,27 +1450,53 @@ void SketchEditor::commitValue() {
   if (!valueEdit_) return;
   const QString text = valueEdit_->text().trimmed();
   double value = 0;
-  if (pending_.angle) {
-    QString t = text;
-    t.remove(QStringLiteral("°")).remove(QStringLiteral("deg"));
-    bool ok = false;
-    const double deg = t.trimmed().toDouble(&ok);
-    if (!ok || deg <= 0 || deg >= 180) {
-      emit message(tr("Enter an angle between 0° and 180°."));
-      return;
+  const bool forTool = bool(valueOp_);
+  switch (valueKind_) {
+    case ValueKind::Angle: {
+      QString t = text;
+      t.remove(QStringLiteral("°")).remove(QStringLiteral("deg"));
+      bool ok = false;
+      const double deg = t.trimmed().toDouble(&ok);
+      // Dimensions sit between 0° and 180°; a rotation may be any turn.
+      if (!ok || (!forTool && (deg <= 0 || deg >= 180)) || (forTool && (deg == 0 || std::abs(deg) > 360))) {
+        emit message(forTool ? tr("Enter an angle in degrees (negative turns clockwise).")
+                             : tr("Enter an angle between 0° and 180°."));
+        return;
+      }
+      value = deg * kPi / 180.0;
+      break;
     }
-    value = deg * kPi / 180.0;
-  } else {
-    const model::LengthParse p = model::length_parse(text.toStdString(), unit());
-    if (!p.ok) {
-      emit message(qs(p.error));
-      return;
+    case ValueKind::Number: {
+      bool ok = false;
+      value = text.toDouble(&ok);
+      if (!ok || value <= 0) {
+        emit message(tr("Enter a number larger than zero."));
+        return;
+      }
+      break;
     }
-    if (p.mm <= 0) {
-      emit message(tr("A dimension must be larger than zero."));
-      return;
+    case ValueKind::Length: {
+      const model::LengthParse p = model::length_parse(text.toStdString(), unit());
+      if (!p.ok) {
+        emit message(qs(p.error));
+        return;
+      }
+      if (p.mm <= 0) {
+        emit message(tr("A value must be larger than zero."));
+        return;
+      }
+      value = p.mm;
+      break;
     }
-    value = p.mm;
+  }
+  if (forTool) {
+    const std::function<bool(double)> op = valueOp_;
+    closeValueEditor();
+    edit([&] { return op(value); });
+    resetDraft();
+    hintForMode();
+    drawPreview();
+    return;
   }
   const PendingDimension d = pending_;
   closeValueEditor();
@@ -1185,8 +1512,72 @@ void SketchEditor::commitValue() {
     std::uint64_t a = d.a.id, b = d.b.id;
     if (d.a.kind == Hit::Origin || (d.a.kind == Hit::Point && !a)) a = resolve(d.a);
     if (d.b.kind == Hit::Origin || (d.b.kind == Hit::Point && !b)) b = resolve(d.b);
-    return addConstraint(d.kind, a, b, 0, value);
+    return applyResult(model::sketch_add_constraint(tl(), sketch_, d.kind, a, b, 0, value), d.kind, a, b, 0);
   });
+}
+
+// A dimension the other constraints already imply can go in as a driven
+// (reference) one instead, as Fusion offers.
+bool SketchEditor::applyResult(const model::ConstraintResult& r, K kind, std::uint64_t a, std::uint64_t b,
+                               std::uint64_t c) {
+  if (r.ok) return true;
+  if (!r.redundant) {
+    emit message(qs(r.message));
+    return false;
+  }
+  const auto answer = QMessageBox::question(
+      view_, tr("Over-constrained"),
+      tr("Adding this dimension would over-constrain the sketch.\n\nAdd it as a driven dimension? It will "
+         "show the size without controlling it."),
+      QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Yes);
+  if (answer != QMessageBox::Yes) return false;
+  const model::ConstraintResult d = model::sketch_add_driven(tl(), sketch_, kind, a, b, c);
+  if (!d.ok) emit message(qs(d.message));
+  return d.ok;
+}
+
+void SketchEditor::showDimensionMenu(std::uint64_t constraint, const QPointF& pos) {
+  const model::SketchConstraintInfo* info = nullptr;
+  for (const auto& c : constraints_)
+    if (c.id == constraint) info = &c;
+  if (!info) return;
+  selected_.clear();
+  selectedCon_ = {constraint};
+  redraw();
+  QMenu menu(view_);
+  QAction* edit = nullptr;
+  QAction* driven = nullptr;
+  if (info->is_dimension) {
+    edit = menu.addAction(tr("Edit Dimension"));
+    edit->setEnabled(!info->driven);
+    driven = menu.addAction(tr("Driven Dimension"));
+    driven->setCheckable(true);
+    driven->setChecked(info->driven);
+    driven->setToolTip(tr("A driven dimension shows the size; it does not control it."));
+    menu.addSeparator();
+  }
+  QAction* remove = menu.addAction(icons::get("close", 16), tr("Delete"));
+  const bool isDriven = info->driven;
+  const K kind = info->kind;
+  const double value = info->value;
+  QAction* chosen = menu.exec(view_->mapToGlobal(pos.toPoint()));
+  if (!chosen) return;
+  if (chosen == remove) {
+    deleteSelection();
+  } else if (chosen == edit) {
+    PendingDimension d;
+    d.existing = constraint;
+    d.kind = kind;
+    d.angle = kind == K::Angle;
+    openValueEditor(d, pos, value);
+  } else if (chosen == driven) {
+    this->edit([&] {
+      const model::ConstraintResult r = model::sketch_set_driven(tl(), sketch_, constraint, !isDriven);
+      if (!r.ok) emit message(r.redundant ? tr("The other constraints already set that size, so it stays driven.")
+                                          : qs(r.message));
+      return bool(r.ok);
+    });
+  }
 }
 
 // ---- Constraints ------------------------------------------------------------------
@@ -1242,6 +1633,7 @@ void SketchEditor::clickConstrain(const Hit& h) {
       picks_.clear();
       if (isPt(a)) return apply(K::Fix, a);
       const auto* e = entity(a.id);
+      if (usesSamples(e->kind)) return apply(K::Fix, a);  // the model fixes the whole curve
       edit([&] {
         if (e->kind == EK::Line) {
           addConstraint(K::Fix, e->p0, 0, 0, 0, true);
@@ -1308,6 +1700,13 @@ void SketchEditor::clickConstrain(const Hit& h) {
       }
       return apply(K::Symmetric, a, picks_[1], picks_[2]);
     }
+    case K::Smooth: {
+      if (isPt(picks_.back())) return wrong(tr("Smooth needs a spline and a curve that meets it."));
+      if (picks_.size() < 2) break;
+      if (kindOf(a) != EK::Spline && kindOf(picks_[1]) != EK::Spline)
+        return wrong(tr("Smooth needs at least one spline."));
+      return apply(K::Smooth, a, picks_[1]);
+    }
     default: picks_.clear(); break;
   }
   drawPreview();
@@ -1316,11 +1715,17 @@ void SketchEditor::clickConstrain(const Hit& h) {
 // ---- Display ----------------------------------------------------------------------
 
 QString SketchEditor::dimensionText(const model::SketchConstraintInfo& c) {
-  if (c.kind == K::Angle) return QString::number(c.value * 180.0 / kPi, 'g', 4) + QStringLiteral("°");
-  const QString len = qs(model::length_format(c.value, unit()));
-  if (c.kind == K::Diameter) return QStringLiteral("Ø") + len;
-  if (c.kind == K::Radius) return QStringLiteral("R") + len;
-  return len;
+  QString text;
+  if (c.kind == K::Angle) {
+    text = QString::number(c.value * 180.0 / kPi, 'g', 4) + QStringLiteral("°");
+  } else {
+    const QString len = qs(model::length_format(c.value, unit()));
+    if (c.kind == K::Diameter) text = QStringLiteral("Ø") + len;
+    else if (c.kind == K::Radius || c.kind == K::MajorRadius || c.kind == K::MinorRadius) text = QStringLiteral("R") + len;
+    else text = len;
+  }
+  // Driven (reference) dimensions in brackets, as drawings show them.
+  return c.driven ? QStringLiteral("(%1)").arg(text) : text;
 }
 
 void SketchEditor::redraw() {
@@ -1380,6 +1785,11 @@ void SketchEditor::redraw() {
   points(pSelected, pal.accent, 3.0);
   // The sketch origin.
   points({{0.0, 0.0}}, pal.accent, 1.6);
+  // Open ends that keep a profile from closing, and collapsed curves.
+  std::vector<geom::Point2> loose;
+  for (std::uint64_t id : looseEnds_)
+    if (const auto* e = entity(id)) loose.push_back({e->x0, e->y0});
+  if (showProfiles_) points(loose, pal.danger, 3.0);
 
   // Dimensions and constraint glyphs.
   labels_.clear();
@@ -1419,11 +1829,12 @@ void SketchEditor::redraw() {
       }
     }
   };
+  std::set<std::pair<std::uint64_t, int>> tagged;
   for (const auto& c : constraints_) {
     const bool sel = selectedCon_.contains(c.id);
     if (c.is_dimension) {
       if (!showDims_) continue;
-      const QColor color = sel ? pal.accent : c.conflicting ? pal.danger : pal.text;
+      const QColor color = sel ? pal.accent : c.conflicting ? pal.danger : c.driven ? pal.textMuted : pal.text;
       const auto* ea = entity(c.a);
       const auto* eb = entity(c.b);
       double u = 0, v = 0;
@@ -1454,6 +1865,34 @@ void SketchEditor::redraw() {
             v = ea->y0 + (ea->radius + 26 * upp) * std::sin(-kPi / 4);
           }
           break;
+        case K::MajorRadius:
+        case K::MinorRadius: {
+          if (!ea) continue;
+          // Along the axis the radius measures, just outside the curve.
+          const double mx = ea->x1 - ea->x0, my = ea->y1 - ea->y0, a = std::max(std::hypot(mx, my), 1e-12);
+          const double ux = mx / a, uy = my / a;
+          if (c.kind == K::MajorRadius) {
+            u = ea->x0 + ux * (a / 2) - uy * 12 * upp, v = ea->y0 + uy * (a / 2) + ux * 12 * upp;
+          } else {
+            u = ea->x0 - uy * (ea->minor / 2) + ux * 12 * upp, v = ea->y0 + ux * (ea->minor / 2) + uy * 12 * upp;
+          }
+          break;
+        }
+        case K::PointCircleDistance:
+        case K::CircleDistance:
+        case K::LineCircleDistance:
+        case K::LineDistance: {
+          if (!ea || !eb) continue;
+          // Halfway between the two, a little off the joining line.
+          double x0 = ea->x0, y0 = ea->y0;
+          if (c.kind == K::LineCircleDistance || c.kind == K::LineDistance) {
+            double t;
+            segmentDistance(eb->x0, eb->y0, ea->x0, ea->y0, ea->x1, ea->y1, &t);
+            x0 = ea->x0 + t * (ea->x1 - ea->x0), y0 = ea->y0 + t * (ea->y1 - ea->y0);
+          }
+          u = (x0 + eb->x0) / 2 + 10 * upp, v = (y0 + eb->y0) / 2 + 10 * upp;
+          break;
+        }
         case K::PointLineDistance: {
           if (!ea || !eb) continue;
           double fx, fy, t;
@@ -1504,6 +1943,8 @@ void SketchEditor::redraw() {
     else on = {c.a, c.b};
     for (std::uint64_t id : on) {
       if (!id) continue;
+      // One tag of a kind per curve: a hexagon's five Equals show once on each side.
+      if (!tagged.insert({id, int(c.kind)}).second) continue;
       double u, v;
       if (glyphSpot(id, g, u, v)) addLabel(u, v, g, color, 12.0, c.id, false);
     }
@@ -1516,8 +1957,7 @@ void SketchEditor::drawHover() {
   const theme::Palette& pal = theme::current();
   Overlay o;
   const geom::Plane gp = geomPlane(plane_);
-  const bool showHover = !dragging_ && mode_ != Mode::Line && mode_ != Mode::Rectangle && mode_ != Mode::Circle &&
-                         mode_ != Mode::Arc && mode_ != Mode::Point;
+  const bool showHover = !dragging_ && !isDrawing(mode_) && mode_ != Mode::Project;
   auto highlight = [&](const Hit& h, const QColor& color) {
     if (h.kind == Hit::Point || h.kind == Hit::Origin) {
       o.points.push_back({geom::makeVertices(gp, {{h.u, h.v}}), color, 3.2});
@@ -1525,8 +1965,17 @@ void SketchEditor::drawHover() {
       if (const auto* e = entity(h.id)) o.curves.push_back({geom::makeCurves(gp, {segOf(*e)}), color, 3.5, false});
     }
   };
-  if (showHover) highlight(hover_, pal.accent.lighter(115));
+  const bool trimming = mode_ == Mode::Trim;
+  if (showHover) highlight(hover_, trimming ? pal.danger : pal.accent.lighter(115));
   for (const Hit& p : picks_) highlight(p, pal.accent);
+  for (std::uint64_t id : opCurves_) {
+    Hit h;
+    h.kind = Hit::Curve;
+    h.id = id;
+    highlight(h, pal.accent);
+  }
+  if (mode_ == Mode::Project && hoverEdge_ >= 0 && hoverEdge_ < int(bodyEdges_.size()))
+    o.curves.push_back({bodyEdges_[hoverEdge_], pal.accent, 4.0, false});
   view_->setOverlay("sketch-hover", o);
 }
 
@@ -1544,8 +1993,18 @@ void SketchEditor::drawPreview() {
   double cu = h.u, cv = h.v;
   if (h.kind == Hit::None && !toPlane(cursor_, cu, cv)) return;
 
-  const bool drawing = mode_ == Mode::Line || mode_ == Mode::Rectangle || mode_ == Mode::Circle ||
-                       mode_ == Mode::Arc || mode_ == Mode::Point;
+  const bool drawing = isDrawing(mode_);
+  // Alignment and extension guides from the snap.
+  if (drawing || (picksCurves(mode_) && opStage_ >= 1)) {
+    std::vector<geom::Seg2> g;
+    for (const auto& q : guides_) {
+      geom::Seg2 s;
+      s.x0 = q[0], s.y0 = q[1], s.x1 = q[2], s.y1 = q[3];
+      if (dist(s.x0, s.y0, s.x1, s.y1) > 1e-9) g.push_back(s);
+    }
+    if (!g.empty()) o.curves.push_back({geom::makeCurves(gp, g), pal.textMuted, 1.0, true});
+    if (h.mid) o.labels.push_back({world(cu, cv + 14 * upp), QStringLiteral("Mid"), pal.accent, 12.0, pal.panel});
+  }
   if (drawing) {
     // Snap marker.
     if (h.kind == Hit::Point || h.kind == Hit::Origin) {
@@ -1642,10 +2101,13 @@ void SketchEditor::drawPreview() {
         o.labels.push_back({world(cu, cv + 16 * upp), QStringLiteral("R") + fmt(s.radius), pal.accent, 14.0, pal.panel});
         break;
       }
-      default: break;
+      default:
+        previewShape(a, cu, cv, segs, live);
+        break;
     }
     if (!segs.empty()) o.curves.push_back({geom::makeCurves(gp, segs), pal.highlight, 1.8, false});
     if (sizeBoxCount() > 0) showSizeBoxes(live, cursor_);
   }
+  if (!drawing) previewModify(o, cu, cv);
   view_->setOverlay("sketch-preview", o);
 }

@@ -207,11 +207,69 @@ fn segments_form_closed_ccw_chains() {
     let segs = &r.outer.segments;
     for i in 0..segs.len() {
         let (Segment::Line { b, .. }, Segment::Line { a, .. }) =
-            (segs[i], segs[(i + 1) % segs.len()])
+            (segs[i].clone(), segs[(i + 1) % segs.len()].clone())
         else {
             panic!("expected lines")
         };
         assert!(dist(a, b) < TOL, "segment {i} ends where the next starts");
     }
     assert!(signed_area(&r.outer.outline) > 0.0);
+}
+
+// ---- Ellipses and splines ------------------------------------------------------
+
+#[test]
+fn an_ellipse_is_a_profile_with_its_exact_area() {
+    let mut s = Sketch::new("e", SketchPlane::default());
+    let c = s.add_point(0.0, 0.0);
+    let m = s.add_point(0.0, 30.0); // major axis along +Y
+    s.add_ellipse(c, m, 10.0).unwrap();
+    let regions = find_regions(&s);
+    assert_eq!(regions.len(), 1);
+    assert!((regions[0].area() - std::f64::consts::PI * 300.0).abs() < 1e-6);
+}
+
+#[test]
+fn a_spline_closed_by_a_line_is_a_profile() {
+    let mut s = Sketch::new("s", SketchPlane::default());
+    let a = s.add_point(0.0, 0.0);
+    let b = s.add_point(15.0, 12.0);
+    let c = s.add_point(30.0, 0.0);
+    s.add_spline(&[a, b, c], false).unwrap();
+    s.add_line(c, a).unwrap();
+    let regions = find_regions(&s);
+    assert_eq!(regions.len(), 1, "one region under the spline");
+    let area = regions[0].area();
+    assert!(area > 150.0 && area < 360.0, "area {area}");
+}
+
+#[test]
+fn an_elliptical_arc_and_a_line_make_a_half_ellipse() {
+    let mut s = Sketch::new("h", SketchPlane::default());
+    let c = s.add_point(0.0, 0.0);
+    let m = s.add_point(20.0, 0.0);
+    let start = s.add_point(20.0, 0.0);
+    let end = s.add_point(-20.0, 0.0);
+    s.add_elliptical_arc(c, m, 10.0, start, end).unwrap();
+    s.add_line(end, start).unwrap();
+    let regions = find_regions(&s);
+    assert_eq!(regions.len(), 1);
+    assert!(
+        (regions[0].area() - std::f64::consts::PI * 200.0 / 2.0).abs() < 0.05,
+        "{}",
+        regions[0].area()
+    );
+}
+
+#[test]
+fn a_closed_spline_is_a_profile() {
+    let mut s = Sketch::new("c", SketchPlane::default());
+    let pts: Vec<_> = [[0.0, 0.0], [20.0, -5.0], [25.0, 15.0], [5.0, 20.0]]
+        .iter()
+        .map(|p| s.add_point(p[0], p[1]))
+        .collect();
+    s.add_spline(&pts, true).unwrap();
+    let regions = find_regions(&s);
+    assert_eq!(regions.len(), 1);
+    assert!(regions[0].area() > 300.0);
 }

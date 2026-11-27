@@ -9,6 +9,7 @@
 #include "widgets/PreferencesDialog.h"
 #include "sketch/Pickers.h"
 #include "sketch/SketchPalette.h"
+#include "sketch/SketchTools.h"
 #include "widgets/Animations.h"
 #include "widgets/CommandDialog.h"
 #include "widgets/DocumentBar.h"
@@ -121,12 +122,34 @@ QVector<Ribbon::Workspace> sketchWorkspace() {
       {"SKETCH"},
       {
           G{"CREATE",
-            {T{"sketch.line", "Line (L)", "line", {}}, T{"sketch.rectangle", "Rectangle (R)", "rectangle", {}},
-             T{"sketch.circle", "Circle (C)", "circle", {}}, T{"sketch.arc", "3-Point Arc (A)", "arc", {}},
-             T{"sketch.point", "Point (P)", "point", {}}}},
+            {T{"sketch.line", "Line (L)", "line", {}}, T{"sketch.rectangle", "2-Point Rectangle (R)", "rectangle", {}},
+             T{"sketch.circle", "Center Diameter Circle (C)", "circle", {}},
+             T{"sketch.arc", "3-Point Arc (A)", "arc", {}}, T{"sketch.polygon", "Polygon", "polygon", {}},
+             T{"sketch.spline", "Fit Point Spline", "spline", {}},
+             T{"sketch.slot", "Center to Center Slot", "sketch-slot", {}, false, true},
+             T{"sketch.rectangle3", "3-Point Rectangle", "rectangle3", {}, false, true},
+             T{"sketch.rectanglec", "Center Rectangle", "rectanglec", {}, false, true},
+             T{"sketch.circle2", "2-Point Circle", "circle2", {}, false, true},
+             T{"sketch.circle3", "3-Point Circle", "circle3", {}, false, true},
+             T{"sketch.arcc", "Center Point Arc", "arcc", {}, false, true},
+             T{"sketch.arct", "Tangent Arc", "arct", {}, false, true},
+             T{"sketch.ellipse", "Ellipse", "ellipse", {}, false, true},
+             T{"sketch.point", "Point (P)", "point", {}, false, true},
+             T{"sketch.mirror", "Mirror", "mirror", {}, false, true},
+             T{"sketch.patternc", "Circular Pattern", "patternc", {}, false, true},
+             T{"sketch.patternr", "Rectangular Pattern", "patternr", {}, false, true},
+             T{"sketch.project", "Project", "project", {}, false, true}}},
           G{"MODIFY",
-            {T{"sketch.construction", "Construction (X)", "construction", {}},
-             T{"sketch.delete", "Delete (Del)", "close", {}}}},
+            {T{"sketch.fillet", "Fillet", "sketch-fillet", {}}, T{"sketch.trim", "Trim (T)", "trim", {}},
+             T{"sketch.offset", "Offset (O)", "offset", {}},
+             T{"sketch.extend", "Extend", "extend", {}, false, true},
+             T{"sketch.move", "Move/Copy", "move", {}, false, true},
+             T{"sketch.chamfer", "Chamfer", "sketch-chamfer", {}, false, true},
+             T{"sketch.break", "Break", "break", {}, false, true},
+             T{"sketch.rotate", "Rotate", "rotate", {}, false, true},
+             T{"sketch.scale", "Sketch Scale", "scale", {}, false, true},
+             T{"sketch.construction", "Construction (X)", "construction", {}, false, true},
+             T{"sketch.delete", "Delete (Del)", "close", {}, false, true}}},
           G{"CONSTRAINTS",
             {T{"sketch.c.coincident", "Coincident", "coincident", {}},
              T{"sketch.c.horizontal", "Horizontal", "horizontal", {}},
@@ -137,7 +160,10 @@ QVector<Ribbon::Workspace> sketchWorkspace() {
              T{"sketch.c.midpoint", "Midpoint", "midpoint", {}},
              T{"sketch.c.concentric", "Concentric", "concentric", {}},
              T{"sketch.c.collinear", "Collinear", "collinear", {}},
-             T{"sketch.c.symmetric", "Symmetric", "symmetric", {}}, T{"sketch.c.fix", "Fix", "fix", {}}}},
+             T{"sketch.c.symmetric", "Symmetric", "symmetric", {}}, T{"sketch.c.fix", "Fix", "fix", {}},
+             T{"sketch.c.smooth", "Smooth (G2)", "smooth", {}},
+             T{"sketch.autoconstrain", "Auto Constrain", "autoconstrain", {}}},
+            /*compact=*/true},
           G{"INSPECT", {T{"sketch.dimension", "Sketch Dimension (D)", "dimension", {}}}},
           G{"SELECT", {T{"sketch.select", "Select (S)", "select", {}}}},
           G{"FINISH SKETCH", {T{"sketch.finish", "Finish Sketch", "check", {}, /*primary=*/true}}},
@@ -162,6 +188,7 @@ const ConstraintTool kConstraintTools[] = {
     {"sketch.c.collinear", model::ConstraintKind::Collinear},
     {"sketch.c.symmetric", model::ConstraintKind::Symmetric},
     {"sketch.c.fix", model::ConstraintKind::Fix},
+    {"sketch.c.smooth", model::ConstraintKind::Smooth},
 };
 
 QString toQString(const rust::String& s) { return QString::fromUtf8(s.data(), int(s.size())); }
@@ -436,8 +463,11 @@ void MainWindow::closeDialog() {
 }
 
 QPoint MainWindow::dialogPosition() const {
+  const int w = dialog_ ? dialog_->width() : 290;
+  // While sketching the palette holds the right side: sit just left of it.
+  if (sketchPanel_ && sketchPanel_->isVisible()) return {sketchPanel_->x() - w - 12, sketchPanel_->y()};
   // Top-right, under the view cube.
-  return {viewport_->width() - (dialog_ ? dialog_->width() : 290) - 16, 140};
+  return {viewport_->width() - w - 16, 140};
 }
 
 void MainWindow::openBoxDialog() {
@@ -906,6 +936,7 @@ void MainWindow::enterSketch(std::uint64_t sketch) {
         redo_.clear();
       },
       [this](rust::Box<model::Timeline> before) { timeline_ = std::move(before); },
+      [this]() { return body_; },
   };
   ribbon_->setWorkspaces(sketchWorkspace());
   sketchEditor_ = std::make_unique<SketchEditor>(viewport_, std::move(host), sketch, this);
@@ -915,6 +946,7 @@ void MainWindow::enterSketch(std::uint64_t sketch) {
     refreshTimeline();
     refreshBrowser();
   });
+  connect(ed, &SketchEditor::commandDialog, this, &MainWindow::showDialog);
   connect(ed, &SketchEditor::finishRequested, this, [this] { QTimer::singleShot(0, this, &MainWindow::finishSketch); });
   connect(ed, &SketchEditor::solveStateChanged, this, [this](int dof, bool conflicting) {
     QString text;
@@ -925,18 +957,11 @@ void MainWindow::enterSketch(std::uint64_t sketch) {
   });
   connect(ed, &SketchEditor::modeChanged, this, [this, ed](SketchEditor::Mode m) {
     QString id;
-    switch (m) {
-      case SketchEditor::Mode::Select: id = "sketch.select"; break;
-      case SketchEditor::Mode::Line: id = "sketch.line"; break;
-      case SketchEditor::Mode::Rectangle: id = "sketch.rectangle"; break;
-      case SketchEditor::Mode::Circle: id = "sketch.circle"; break;
-      case SketchEditor::Mode::Arc: id = "sketch.arc"; break;
-      case SketchEditor::Mode::Point: id = "sketch.point"; break;
-      case SketchEditor::Mode::Dimension: id = "sketch.dimension"; break;
-      case SketchEditor::Mode::Constrain:
-        for (const auto& t : kConstraintTools)
-          if (t.kind == ed->constraintKind()) id = t.id;
-        break;
+    if (m == SketchEditor::Mode::Constrain) {
+      for (const auto& t : kConstraintTools)
+        if (t.kind == ed->constraintKind()) id = t.id;
+    } else if (const SketchToolDef* t = sketchToolFor(m)) {
+      id = t->id;
     }
     ribbon_->setActiveTool(id);
   });
@@ -1026,27 +1051,16 @@ void MainWindow::finishSketch() {
 void MainWindow::onSketchTool(const QString& id) {
   SketchEditor* ed = sketchEditor_.get();
   if (!ed) return;
-  using M = SketchEditor::Mode;
   if (id == "sketch.finish") {
     finishSketch();
-  } else if (id == "sketch.line") {
-    ed->setMode(M::Line);
-  } else if (id == "sketch.rectangle") {
-    ed->setMode(M::Rectangle);
-  } else if (id == "sketch.circle") {
-    ed->setMode(M::Circle);
-  } else if (id == "sketch.arc") {
-    ed->setMode(M::Arc);
-  } else if (id == "sketch.point") {
-    ed->setMode(M::Point);
-  } else if (id == "sketch.dimension") {
-    ed->setMode(M::Dimension);
-  } else if (id == "sketch.select") {
-    ed->setMode(M::Select);
   } else if (id == "sketch.construction") {
     ed->toggleConstruction();
   } else if (id == "sketch.delete") {
     ed->deleteSelection();
+  } else if (id == "sketch.autoconstrain") {
+    ed->autoConstrain();
+  } else if (const SketchToolDef* t = sketchToolById(id)) {
+    ed->setMode(t->mode);
   } else {
     for (const auto& t : kConstraintTools)
       if (id == t.id) ed->setConstraint(t.kind);

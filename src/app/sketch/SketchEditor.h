@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Kernel.h"
 #include "Viewport.h"
 #include "model_core/src/ffi.rs.h"  // Rust timeline API (generated)
 
@@ -8,11 +9,15 @@
 #include <QSet>
 #include <QTimer>
 
+#include <TopoDS_Shape.hxx>
+
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <functional>
 #include <vector>
 
+class CommandDialog;
 class QLineEdit;
 
 // Edits one sketch of the timeline in the 3D view: drawing tools, snapping,
@@ -22,12 +27,21 @@ class QLineEdit;
 class SketchEditor : public QObject, public ViewportTool {
   Q_OBJECT
  public:
-  enum class Mode { Select, Line, Rectangle, Circle, Arc, Point, Dimension, Constrain };
+  enum class Mode {
+    Select, Line, Rectangle, Circle, Arc, Point, Dimension, Constrain,
+    // More create tools.
+    Rectangle3, RectangleCentre, Circle2, Circle3, CentreArc, TangentArc, Polygon, Ellipse, Slot, Spline,
+    // Modify tools.
+    Trim, Extend, Break, Fillet, Chamfer, Offset, Mirror, Move, Rotate, Scale, PatternRect, PatternCirc, Project,
+  };
+  static bool isDrawing(Mode m);  // places points with snapping
+  static bool picksCurves(Mode m);  // Mirror, Move…: pick curves first, Enter, then the rest
 
   struct Host {
     std::function<model::Timeline&()> timeline;
     std::function<void(rust::Box<model::Timeline>)> pushUndo;  // state before a change
     std::function<void(rust::Box<model::Timeline>)> restore;   // undo a failed change
+    std::function<TopoDS_Shape()> body;                         // for Project (may be null)
   };
 
   SketchEditor(Viewport* view, Host host, std::uint64_t sketch, QObject* parent = nullptr);
@@ -53,6 +67,9 @@ class SketchEditor : public QObject, public ViewportTool {
   void setConstructionMode(bool on);
   bool constructionMode() const { return constructionMode_; }
   void selectUnconstrained();
+  // Adds the constraints the geometry already shows (coincident ends,
+  // horizontal/vertical lines…).
+  void autoConstrain();
 
   // ViewportTool
   bool mousePress(QMouseEvent* e) override;
@@ -68,12 +85,14 @@ class SketchEditor : public QObject, public ViewportTool {
   void solveStateChanged(int dof, bool conflicting);
   void modeChanged(SketchEditor::Mode mode);
   void finishRequested();
+  void commandDialog(CommandDialog* dialog);  // the host shows it like other commands
 
  private:
   struct Hit {
     enum Kind { None, Point, Curve, Origin, Label } kind = None;
     std::uint64_t id = 0;  // entity, or constraint for labels
     double u = 0, v = 0;   // picked position (snapped for points)
+    bool mid = false;      // snapped to the curve's midpoint
   };
   struct LabelSpot {
     QPointF screen;
@@ -125,6 +144,26 @@ class SketchEditor : public QObject, public ViewportTool {
   void resetDraft();
   void hintForMode();
 
+  // More create tools (SketchShapes.cpp).
+  void clickShape(const Hit& h, const Typed& typed);
+  void finishSpline();
+  void previewShape(const Hit& a, double cu, double cv, std::vector<geom::Seg2>& segs, double live[2]);
+  std::uint64_t cornerAt(const std::vector<std::uint64_t>& lines, double u, double v) const;
+  void attach(const Hit& h, std::uint64_t point);  // join a new shape's point to what was clicked
+
+  // Modify tools (SketchModify.cpp).
+  void clickModify(const Hit& h, const QPointF& pos, Qt::KeyboardModifiers mods);
+  void finishPicking();
+  void previewModify(Overlay& o, double cu, double cv);
+  std::vector<std::uint64_t> chainOf(std::uint64_t curve) const;
+  std::vector<std::uint64_t> cornerLines(std::uint64_t point) const;
+  int edgeAt(const QPointF& pos) const;
+  void projectEdge(int index);
+  void openPatternDialog(bool circular);
+  void showDimensionMenu(std::uint64_t constraint, const QPointF& pos);
+  bool applyResult(const model::ConstraintResult& r, model::ConstraintKind kind, std::uint64_t a, std::uint64_t b,
+                   std::uint64_t c);
+
   // Dimensions.
   struct PendingDimension {
     std::uint64_t existing = 0;  // edit this constraint; else create:
@@ -133,6 +172,12 @@ class SketchEditor : public QObject, public ViewportTool {
     bool angle = false;
   };
   void openValueEditor(const PendingDimension& d, const QPointF& pos, double currentValue);
+  // A value box that runs a tool step (fillet radius, rotate angle…) instead
+  // of setting a dimension.
+  enum class ValueKind { Length, Angle, Number };
+  void askValue(const QString& prompt, ValueKind kind, double initial, const QPointF& pos,
+                std::function<bool(double)> op);
+  void placeValueBox(QLineEdit* edit, const QPointF& pos);
   void commitValue();
   void closeValueEditor();
   double measure(model::ConstraintKind kind, const Hit& a, const Hit& b) const;
@@ -189,4 +234,18 @@ class SketchEditor : public QObject, public ViewportTool {
   bool showPoints_ = true;
   bool showProfiles_ = true;
   bool snap_ = true;
+
+  // Snapping guides found by snap() (u0, v0, u1, v1), drawn by the preview.
+  mutable std::vector<std::array<double, 4>> guides_;
+  // Modify tools: the curves picked, which step comes next, the anchor.
+  std::vector<std::uint64_t> opCurves_;
+  int opStage_ = 0;
+  Hit opAnchor_;
+  std::function<bool(double)> valueOp_;
+  ValueKind valueKind_ = ValueKind::Length;
+  std::vector<std::uint64_t> looseEnds_;
+  std::vector<std::uint64_t> degenerate_;
+  std::vector<TopoDS_Shape> bodyEdges_;
+  int hoverEdge_ = -1;
+  int polygonSides_ = 6;
 };

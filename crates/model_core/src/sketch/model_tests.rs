@@ -12,8 +12,8 @@ fn sketch() -> Sketch {
 }
 
 fn line_points(s: &Sketch, line: EntityId) -> (EntityId, EntityId) {
-    match s.entity(line).unwrap().geometry {
-        Geometry::Line { start, end } => (start, end),
+    match &s.entity(line).unwrap().geometry {
+        Geometry::Line { start, end } => (*start, *end),
         g => panic!("not a line: {g:?}"),
     }
 }
@@ -273,4 +273,224 @@ fn parallel_turns_the_second_line() {
     let (p, q) = (s.point(pts[0]).unwrap(), s.point(pts[1]).unwrap());
     assert!((q[1] - p[1]).abs() < 1e-7);
     assert!(((q[0] - p[0]).abs() - 8.0f64.hypot(4.0)).abs() < 1e-6);
+}
+
+// ---- Redundant, driven, collapse, first dimension, continuation -----------------
+
+fn rect(s: &mut Sketch) -> [EntityId; 4] {
+    s.add_rectangle([0.0, 0.0], [40.0, 20.0]).unwrap()
+}
+
+#[test]
+fn a_repeated_dimension_is_refused_as_redundant() {
+    let mut s = Sketch::new("r", SketchPlane::origin_plane(OriginPlane::XY));
+    let l = rect(&mut s);
+    s.add_constraint(SketchConstraint::Length {
+        line: l[0],
+        value: 40.0,
+    })
+    .unwrap();
+    let again = s.add_constraint(SketchConstraint::Length {
+        line: l[2],
+        value: 40.0,
+    });
+    assert_eq!(
+        again,
+        Err(SketchError::Redundant),
+        "top = bottom already (horizontal sides)"
+    );
+    // A driven dimension can still show it.
+    let d = s
+        .add_driven(SketchConstraint::Length {
+            line: l[2],
+            value: 1.0,
+        })
+        .unwrap();
+    assert!(s.is_driven(d));
+    assert!((s.constraint(d).unwrap().value().unwrap() - 40.0).abs() < 1e-9);
+}
+
+#[test]
+fn driven_dimensions_follow_the_geometry() {
+    let mut s = Sketch::new("d", SketchPlane::origin_plane(OriginPlane::XY));
+    let l = rect(&mut s);
+    let w = s
+        .add_constraint(SketchConstraint::Length {
+            line: l[0],
+            value: 40.0,
+        })
+        .unwrap();
+    let d = s
+        .add_driven(SketchConstraint::Length {
+            line: l[2],
+            value: 0.0,
+        })
+        .unwrap();
+    s.set_dimension(w, 55.0).unwrap();
+    assert!((s.constraint(d).unwrap().value().unwrap() - 55.0).abs() < 1e-6);
+    assert!(
+        s.set_dimension(d, 10.0).is_err(),
+        "driven dimensions can't be set"
+    );
+    // Making it driving again is checked: still redundant.
+    assert_eq!(s.set_driven(d, false), Err(SketchError::Redundant));
+}
+
+#[test]
+fn a_constraint_that_collapses_a_line_is_refused() {
+    let mut s = Sketch::new("c", SketchPlane::origin_plane(OriginPlane::XY));
+    let a = s.add_point(0.0, 0.0);
+    let b = s.add_point(10.0, 0.0);
+    let line = s.add_line(a, b).unwrap();
+    s.add_constraint(SketchConstraint::Fix(a)).unwrap();
+    s.add_constraint(SketchConstraint::Horizontal(line))
+        .unwrap();
+    // Making the ends coincide would collapse the line.
+    let r = s.add_constraint(SketchConstraint::Coincident(a, b));
+    assert!(matches!(r, Err(SketchError::Collapses(_))), "{r:?}");
+    assert!(s.point(b).unwrap()[0] > 9.0, "geometry restored");
+}
+
+#[test]
+fn the_first_dimension_scales_the_sketch() {
+    let mut s = Sketch::new("f", SketchPlane::origin_plane(OriginPlane::XY));
+    let l = rect(&mut s); // 40 x 20 at the origin
+    let c = s.add_circle_xy([10.0, 10.0], 5.0).unwrap();
+    s.add_constraint(SketchConstraint::Length {
+        line: l[0],
+        value: 80.0,
+    })
+    .unwrap();
+    assert!(
+        (s.radius(c).unwrap() - 10.0).abs() < 1e-6,
+        "everything doubled"
+    );
+    // The second dimension no longer scales.
+    s.add_constraint(SketchConstraint::Radius {
+        curve: c,
+        value: 3.0,
+    })
+    .unwrap();
+    assert!((s.radius(c).unwrap() - 3.0).abs() < 1e-6);
+    let (p, q) = (
+        s.point(s.entity(l[1]).unwrap().geometry.defining_points()[0])
+            .unwrap(),
+        [80.0, 0.0],
+    );
+    assert!((p[0] - q[0]).abs() < 1e-6);
+}
+
+#[test]
+fn a_big_dimension_change_keeps_the_shape_unfolded() {
+    // A triangle: two sides dimensioned, the third free. Growing one side
+    // a lot in one jump can fold the triangle over; steps keep it.
+    let mut s = Sketch::new("t", SketchPlane::origin_plane(OriginPlane::XY));
+    let a = s.add_point(0.0, 0.0);
+    let b = s.add_point(30.0, 0.0);
+    let c = s.add_point(10.0, 20.0);
+    let ab = s.add_line(a, b).unwrap();
+    let bc = s.add_line(b, c).unwrap();
+    let ca = s.add_line(c, a).unwrap();
+    s.add_constraint(SketchConstraint::Fix(a)).unwrap();
+    s.add_constraint(SketchConstraint::Horizontal(ab)).unwrap();
+    let side = s
+        .add_constraint(SketchConstraint::Length {
+            line: ab,
+            value: 30.0,
+        })
+        .unwrap();
+    s.add_constraint(SketchConstraint::Length {
+        line: bc,
+        value: (20f64).hypot(20.0),
+    })
+    .unwrap();
+    s.add_constraint(SketchConstraint::Length {
+        line: ca,
+        value: (10f64).hypot(20.0),
+    })
+    .unwrap();
+    let up = s.point(c).unwrap()[1] > 0.0;
+    s.set_dimension(side, 12.0).unwrap();
+    assert_eq!(
+        s.point(c).unwrap()[1] > 0.0,
+        up,
+        "apex stays on the same side"
+    );
+}
+
+// ---- New shapes and dimensions ----------------------------------------------------
+
+#[test]
+fn ellipses_solve_and_take_radius_dimensions() {
+    let mut s = Sketch::new("e", SketchPlane::origin_plane(OriginPlane::XY));
+    let c = s.add_point(0.0, 0.0);
+    let m = s.add_point(20.0, 0.0);
+    let e = s.add_ellipse(c, m, 8.0).unwrap();
+    s.add_constraint(SketchConstraint::Fix(c)).unwrap();
+    s.add_constraint(SketchConstraint::MajorRadius {
+        ellipse: e,
+        value: 30.0,
+    })
+    .unwrap();
+    s.add_constraint(SketchConstraint::MinorRadius {
+        ellipse: e,
+        value: 10.0,
+    })
+    .unwrap();
+    let (a, b) = s.ellipse_radii(e).unwrap();
+    assert!((a - 30.0).abs() < 1e-6 && (b - 10.0).abs() < 1e-6);
+}
+
+#[test]
+fn splines_pass_through_their_fit_points() {
+    let mut s = Sketch::new("s", SketchPlane::origin_plane(OriginPlane::XY));
+    let pts: Vec<EntityId> = [[0.0, 0.0], [10.0, 8.0], [20.0, 0.0], [30.0, 5.0]]
+        .iter()
+        .map(|p| s.add_point(p[0], p[1]))
+        .collect();
+    let sp = s.add_spline(&pts, false).unwrap();
+    let data = s.spline(sp).expect("shape after solving");
+    assert_eq!(data.degree, 3);
+    let first = data.control_points[0];
+    let last = *data.control_points.last().unwrap();
+    assert!(
+        (first[0]).abs() < 1e-9 && (last[0] - 30.0).abs() < 1e-9,
+        "clamped ends at the fit points"
+    );
+    // A fit point can be dimensioned and the spline follows.
+    s.add_constraint(SketchConstraint::Fix(pts[0])).unwrap();
+    s.add_constraint(SketchConstraint::VerticalDistance {
+        a: pts[0],
+        b: pts[1],
+        value: 12.0,
+    })
+    .unwrap();
+    assert!((s.point(pts[1]).unwrap()[1] - 12.0).abs() < 1e-6);
+}
+
+#[test]
+fn line_and_circle_gap_dimensions() {
+    let mut s = Sketch::new("g", SketchPlane::origin_plane(OriginPlane::XY));
+    let l1 = s.add_line_xy([0.0, 0.0], [50.0, 0.0]);
+    let l2 = s.add_line_xy([0.0, 10.0], [50.0, 10.0]);
+    let c = s.add_circle_xy([25.0, 30.0], 5.0).unwrap();
+    s.add_constraint(SketchConstraint::Fix(l1)).unwrap(); // fixes a whole curve
+    s.add_constraint(SketchConstraint::Parallel(l1, l2))
+        .unwrap();
+    s.add_constraint(SketchConstraint::LineDistance {
+        a: l1,
+        b: l2,
+        value: 15.0,
+    })
+    .unwrap();
+    s.add_constraint(SketchConstraint::LineCircleDistance {
+        line: l2,
+        circle: c,
+        value: 4.0,
+    })
+    .unwrap();
+    let ys = s.entity(l2).unwrap().geometry.defining_points();
+    assert!((s.point(ys[0]).unwrap()[1] - 15.0).abs() < 1e-6);
+    let centre = s.entity(c).unwrap().geometry.defining_points()[0];
+    assert!((s.point(centre).unwrap()[1] - s.radius(c).unwrap() - 15.0 - 4.0).abs() < 1e-6);
 }

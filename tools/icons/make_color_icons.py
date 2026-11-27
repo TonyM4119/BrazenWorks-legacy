@@ -362,6 +362,205 @@ def _(ic):
     line(ic, [(23, 9), (9, 23)], RED, 3.0)
 
 
+@icon("rectangle3")
+def _(ic):
+    poly(ic, [(5, 20), (17, 6), (27, 14), (15, 28)], "#4A9BE0", INK, 1.6, 'fill-opacity="0.18"')
+    for x, y in ((5, 20), (17, 6), (27, 14)):
+        pt(ic, x, y)
+
+
+@icon("rectanglec")
+def _(ic):
+    ic.add(f'<rect x="6" y="9" width="20" height="14" fill="#4A9BE0" fill-opacity="0.18" stroke="{INK}" '
+           'stroke-width="1.6"/>')
+    line(ic, [(6, 23), (26, 9)], INK_DIM, 1.0, "1.6 1.4")
+    pt(ic, 16, 16)
+    pt(ic, 26, 9)
+
+
+@icon("circle2")
+def _(ic):
+    ic.add(f'<circle cx="16" cy="16" r="10" fill="#4A9BE0" fill-opacity="0.18" stroke="{INK}" stroke-width="1.6"/>')
+    line(ic, [(8.9, 23.1), (23.1, 8.9)], INK_DIM, 1.0, "1.6 1.4")
+    pt(ic, 8.9, 23.1)
+    pt(ic, 23.1, 8.9)
+
+
+@icon("circle3")
+def _(ic):
+    ic.add(f'<circle cx="16" cy="16" r="10" fill="#4A9BE0" fill-opacity="0.18" stroke="{INK}" stroke-width="1.6"/>')
+    for x, y in ((6, 16), (21, 7.3), (21, 24.7)):
+        pt(ic, x, y)
+
+
+@icon("arcc")
+def _(ic):
+    path(ic, "M26,16 A10,10 0 0 0 16,6")
+    line(ic, [(16, 16), (26, 16)], INK_DIM, 1.0, "1.6 1.4")
+    line(ic, [(16, 16), (16, 6)], INK_DIM, 1.0, "1.6 1.4")
+    pt(ic, 16, 16)
+    pt(ic, 26, 16)
+    pt(ic, 16, 6)
+
+
+@icon("arct")
+def _(ic):
+    line(ic, [(4, 24), (14, 24)])
+    path(ic, "M14,24 A9,9 0 0 0 23,15", stroke=AMBER, sw=1.8)
+    pt(ic, 14, 24)
+    pt(ic, 23, 15)
+
+
+@icon("polygon")
+def _(ic):
+    hexagon = [(16 + 10 * math.cos(math.radians(30 + 60 * k)), 16 + 10 * math.sin(math.radians(30 + 60 * k)))
+               for k in range(6)]
+    poly(ic, hexagon, "#4A9BE0", INK, 1.6, 'fill-opacity="0.18"')
+    pt(ic, 16, 16)
+
+
+@icon("ellipse")
+def _(ic):
+    ic.add(f'<ellipse cx="16" cy="16" rx="11" ry="6.5" fill="#4A9BE0" fill-opacity="0.18" stroke="{INK}" '
+           'stroke-width="1.6" transform="rotate(-20 16 16)"/>')
+    pt(ic, 16, 16)
+
+
+@icon("sketch-slot")
+def _(ic):
+    path(ic, "M10,11 H22 A5,5 0 0 1 22,21 H10 A5,5 0 0 1 10,11 Z", fill="#4A9BE0", extra='fill-opacity="0.18"')
+    line(ic, [(10, 16), (22, 16)], INK_DIM, 1.0, "1.6 1.4")
+    pt(ic, 10, 16)
+    pt(ic, 22, 16)
+
+
+@icon("spline")
+def _(ic):
+    path(ic, "M4,24 C9,6 15,6 17,16 S25,26 28,8")
+    for x, y in ((4, 24), (12, 10.5), (17, 16), (24, 21), (28, 8)):
+        pt(ic, x, y)
+
+
+@icon("sketch-fillet")
+def _(ic):
+    line(ic, [(6, 6), (6, 18)])
+    line(ic, [(14, 26), (26, 26)])
+    path(ic, "M6,18 A8,8 0 0 0 14,26", stroke=AMBER, sw=2.0)
+    line(ic, [(6, 18), (6, 26), (14, 26)], INK_DIM, 1.0, "1.6 1.4")
+
+
+@icon("sketch-chamfer")
+def _(ic):
+    line(ic, [(6, 6), (6, 17)])
+    line(ic, [(15, 26), (26, 26)])
+    line(ic, [(6, 17), (15, 26)], AMBER, 2.0)
+    line(ic, [(6, 17), (6, 26), (15, 26)], INK_DIM, 1.0, "1.6 1.4")
+
+
+@icon("trim")
+def _(ic):
+    line(ic, [(5, 16), (27, 16)])
+    line(ic, [(16, 5), (16, 15)])
+    line(ic, [(16, 17), (16, 27)], RED, 1.6, "2 1.8")
+    path(ic, "M20,21 l6,6 M26,21 l-6,6", stroke=RED, sw=1.8)
+
+
+@icon("extend")
+def _(ic):
+    line(ic, [(26, 5), (26, 27)])
+    line(ic, [(5, 16), (15, 16)])
+    arrow(ic, 15, 16, 25, 16, GREEN, 1.8, 3.4)
+
+
+@icon("break")
+def _(ic):
+    line(ic, [(5, 22), (14, 15)])
+    line(ic, [(18, 12), (27, 5)])
+    line(ic, [(10, 6), (22, 26)], INK_DIM, 1.2)
+    pt(ic, 14, 15, AMBER)
+    pt(ic, 18, 12, AMBER)
+
+
+@icon("offset")
+def _(ic):
+    path(ic, "M5,26 V14 A8,8 0 0 1 13,6 H27")
+    path(ic, "M10,26 V14 A3,3 0 0 1 13,11 H27", stroke=AMBER, sw=1.6)
+    arrow(ic, 19, 6.5, 19, 10.5, POINT, 1.2, 2.4)
+
+
+@icon("mirror")
+def _(ic):
+    line(ic, [(16, 3), (16, 29)], AMBER, 1.4, "2.2 1.8")
+    poly(ic, [(5, 22), (12, 8), (12, 22)], "#4A9BE0", INK, 1.4, 'fill-opacity="0.18"')
+    poly(ic, [(27, 22), (20, 8), (20, 22)], "none", INK_DIM, 1.2, 'stroke-dasharray="1.8 1.6"')
+
+
+@icon("move")
+def _(ic):
+    for x0, y0, x1, y1 in ((16, 16, 16, 4), (16, 16, 16, 28), (16, 16, 4, 16), (16, 16, 28, 16)):
+        arrow(ic, x0, y0, x1, y1, INK, 1.6, 3.4)
+    pt(ic, 16, 16, AMBER, 3.6)
+
+
+@icon("rotate")
+def _(ic):
+    path(ic, "M8,20 A9,9 0 1 1 13,25", stroke=INK, sw=1.6)
+    poly(ic, [(13, 25), (8.5, 27.5), (9.3, 22.2)], INK, INK, 0.6)
+    pt(ic, 16, 16, AMBER, 3.4)
+
+
+@icon("scale")
+def _(ic):
+    ic.add(f'<rect x="5" y="15" width="12" height="12" fill="none" stroke="{INK_DIM}" stroke-width="1.2" '
+           'stroke-dasharray="1.8 1.6"/>')
+    ic.add(f'<rect x="5" y="5" width="22" height="22" fill="#4A9BE0" fill-opacity="0.15" stroke="{INK}" '
+           'stroke-width="1.6"/>')
+    arrow(ic, 15, 17, 24, 8, AMBER, 1.6, 3.2)
+
+
+@icon("patternr")
+def _(ic):
+    for x in (6, 15, 24):
+        for y in (8, 18):
+            ic.add(f'<rect x="{x - 3}" y="{y - 3}" width="6" height="6" fill="#4A9BE0" fill-opacity="0.25" '
+                   f'stroke="{INK if (x, y) == (6, 18) else INK_DIM}" stroke-width="1.3"/>')
+    line(ic, [(4, 27), (28, 27)], AMBER, 1.2, "2 1.6")
+
+
+@icon("patternc")
+def _(ic):
+    ic.add(f'<circle cx="16" cy="16" r="9" fill="none" stroke="{AMBER}" stroke-width="1.1" stroke-dasharray="2 1.6"/>')
+    for k in range(6):
+        a = math.radians(-90 + 60 * k)
+        ic.add(f'<circle cx="{16 + 9 * math.cos(a):.2f}" cy="{16 + 9 * math.sin(a):.2f}" r="2.6" fill="#4A9BE0" '
+               f'fill-opacity="0.35" stroke="{INK if k == 0 else INK_DIM}" stroke-width="1.2"/>')
+    pt(ic, 16, 16, POINT, 2.6)
+
+
+@icon("project")
+def _(ic):
+    box(ic, Iso(16, 13, 0.75), -6, -6, 0, 12, 12, 7, GREY)
+    plane(ic, Iso(16, 23, 0.75), -9, -9, 0, 18, 18, "#DDE4EA", "#8794A0", 0.6)
+    p = Iso(16, 23, 0.75).p
+    line(ic, [p(-6, -6), p(6, -6), p(6, 6), p(-6, 6), p(-6, -6)], "#B04DE0", 1.6)
+    arrow(ic, 25, 9, 25, 19, "#B04DE0", 1.4, 2.8)
+
+
+@icon("smooth")
+def _(ic):
+    path(ic, "M4,24 C10,24 12,16 16,16")
+    path(ic, "M16,16 C20,16 22,8 28,8", stroke=AMBER, sw=1.8)
+    pt(ic, 16, 16)
+    mark(ic, "G2", 23, 27, AMBER, 8)
+
+
+@icon("autoconstrain")
+def _(ic):
+    poly(ic, [(6, 24), (16, 6), (26, 24)], "#4A9BE0", INK, 1.5, 'fill-opacity="0.15"')
+    badge(ic, 23, 23, "plus", GREEN, 5)
+    mark(ic, "=", 11, 17, AMBER, 8)
+
+
 def constraint(name, draw):
     ICONS[name] = draw
 

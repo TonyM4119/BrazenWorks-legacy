@@ -105,15 +105,32 @@ millimeters, so switching units never changes the geometry.
    dimension is added for you. Clicks snap to points, the origin and curves; lines
    within a few degrees of level or plumb get Horizontal/Vertical. Double-click, right-
    click or **Esc** ends a line chain.
-3. **D** dimensions: click a line then empty space (length), a circle (diameter), an arc
-   (radius), two points (distance), a point and a line, or two lines (angle). Type a value
-   in any unit (`2 1/4`, `30mm`) and press **Enter**. Double-click a dimension to change it.
+   The **CREATE** menu has the rest: 3-point and centre rectangles, 2- and 3-point
+   circles, centre and tangent arcs, polygon (type the radius, **Tab**, the sides),
+   ellipse, slot and fit-point spline (double-click or **Enter** ends it; click the first
+   point to close it). Clicks also snap to line midpoints, line extensions and alignment
+   with other points (dashed guides).
+3. **D** dimensions: click a curve then empty space (line length, circle diameter, arc
+   radius, ellipse major/minor radius), or two things: points (distance), a point and a
+   line, two lines (angle, or the gap when parallel), or a line, point or circle and a
+   circle (the gap). Type a value in any unit (`2 1/4`, `30mm`) and press **Enter**.
+   Double-click a dimension to change it. The first dimension scales the whole sketch.
+   A dimension the sketch already implies can be added as a **driven** one, shown in
+   brackets; right-click a dimension to switch it between driven and driving.
 4. Constraints: pick a tool in **CONSTRAINTS**, then the geometry (or select first, then
-   the tool). Refused constraints say why.
-5. Colours: **blue** can still move, **white** is fully constrained, **red** conflicts;
-   dashed is construction (**X**). The status bar shows the degrees of freedom left.
-6. **S** / Esc returns to select: click to select, drag points or lines, **Delete**.
-7. **Finish Sketch**, then **Extrude**: click profiles (they light up), set the distance,
+   the tool). Refused constraints say why. **Auto Constrain** adds what the drawing
+   already shows (joined ends, level lines, tangent arcs).
+5. **MODIFY**: **Fillet** and **Chamfer** (click a corner, type the size), **Trim**
+   (**T**), **Extend** and **Break** (click the curve), **Offset** (**O**: click a curve,
+   its chain comes along, click the side, type the distance), **Move/Copy**, **Rotate**
+   and **Sketch Scale** (pick curves or select first, **Enter**, click the base point or
+   centre; hold **Ctrl** to copy). **Mirror**, the patterns and **Project** (copies body
+   edges into the sketch, fixed) are in **CREATE**.
+6. Colours: **blue** can still move, **white** is fully constrained, **red** conflicts;
+   dashed is construction (**X**). Red dots mark open ends that keep a profile from
+   closing. The status bar shows the degrees of freedom left.
+7. **S** / Esc returns to select: click to select, drag points or lines, **Delete**.
+8. **Finish Sketch**, then **Extrude**: click profiles (they light up), set the distance,
    direction and Join/Cut/New Body; the result previews live.
 
 The **Sketch Palette** on the right shows the degrees of freedom, display settings

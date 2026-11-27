@@ -20,10 +20,12 @@ class Ribbon : public QFrame {
     QString icon;
     QString tip;      // empty = enabled; otherwise shown and the tool is disabled
     bool primary = false;  // big coloured button with its label (e.g. Finish Sketch)
+    bool menuOnly = false; // only in the group's drop-down menu, as Fusion keeps rarer tools
   };
   struct Group {
     QString label;
     QVector<Tool> tools;
+    bool compact = false;  // small icons in two rows (the sketch constraints)
   };
   struct Workspace {
     QString name;

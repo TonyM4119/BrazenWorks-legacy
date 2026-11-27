@@ -1,6 +1,7 @@
 #include "SketchPalette.h"
 
 #include "Icons.h"
+#include "SketchTools.h"
 
 #include <QCheckBox>
 #include <QGridLayout>
@@ -15,22 +16,12 @@ namespace {
 
 using K = model::ConstraintKind;
 
-struct ToolInfo {
-  const char* id;
-  const char* icon;
-  const char* title;
-  const char* hint;
-};
-
-const ToolInfo kCreate[] = {
-    {"sketch.line", "line", "Line", "Click points; type a length (or Tab) for the next segment. Esc stops."},
-    {"sketch.rectangle", "rectangle", "Rectangle", "Click two corners, or type the width, Tab, the height, Enter."},
-    {"sketch.circle", "circle", "Center Diameter Circle", "Click the centre, then type the diameter and press Enter."},
-    {"sketch.arc", "arc", "3-Point Arc", "Click the start, the end, then a point on the arc."},
-    {"sketch.point", "point", "Point", "Click to place points."},
-    {"sketch.dimension", "dimension", "Sketch Dimension",
-     "Pick a line, circle or arc, or two points/lines; type a value and press Enter."},
-};
+// Palette shortcuts; titles and hints come from the shared tool table.
+const char* const kCreate[] = {"sketch.line", "sketch.rectangle", "sketch.circle", "sketch.arc",
+                               "sketch.polygon", "sketch.spline", "sketch.slot", "sketch.ellipse",
+                               "sketch.point", "sketch.project", "sketch.mirror", "sketch.dimension"};
+const char* const kModify[] = {"sketch.fillet", "sketch.trim", "sketch.extend", "sketch.offset",
+                               "sketch.move", "sketch.patternr"};
 
 struct ConstraintInfo {
   const char* id;
@@ -52,6 +43,7 @@ const ConstraintInfo kConstraints[] = {
     {"sketch.c.collinear", "collinear", "Collinear", K::Collinear},
     {"sketch.c.symmetric", "symmetric", "Symmetric", K::Symmetric},
     {"sketch.c.fix", "fix", "Fix", K::Fix},
+    {"sketch.c.smooth", "smooth", "Smooth (G2)", K::Smooth},
 };
 
 QLabel* heading(const QString& text, QWidget* parent) {
@@ -116,11 +108,24 @@ SketchPalette::SketchPalette(SketchEditor* editor, QWidget* parent) : QWidget(pa
   auto* create = new QGridLayout;
   create->setSpacing(4);
   int i = 0;
-  for (const ToolInfo& t : kCreate) {
-    create->addWidget(toolButton(t.id, t.icon, tr(t.title)), i / 6, i % 6);
+  for (const char* id : kCreate) {
+    const SketchToolDef* t = sketchToolById(id);
+    create->addWidget(toolButton(t->id, t->icon, tr(t->title)), i / 6, i % 6);
     ++i;
   }
   col->addLayout(create);
+
+  // Modify.
+  col->addWidget(heading(tr("Modify"), this));
+  auto* modify = new QGridLayout;
+  modify->setSpacing(4);
+  i = 0;
+  for (const char* id : kModify) {
+    const SketchToolDef* t = sketchToolById(id);
+    modify->addWidget(toolButton(t->id, t->icon, tr(t->title)), i / 6, i % 6);
+    ++i;
+  }
+  col->addLayout(modify);
 
   // Constraints.
   col->addWidget(heading(tr("Constraints"), this));
@@ -131,6 +136,12 @@ SketchPalette::SketchPalette(SketchEditor* editor, QWidget* parent) : QWidget(pa
     cons->addWidget(toolButton(c.id, c.icon, tr(c.title)), i / 6, i % 6);
     ++i;
   }
+  auto* autoBtn = new QPushButton(icons::get("autoconstrain", 16), tr("Auto Constrain"), this);
+  autoBtn->setObjectName("PaletteButton");
+  autoBtn->setToolTip(tr("Add the constraints the drawing already shows: joined ends, horizontal and vertical "
+                         "lines, tangent arcs"));
+  connect(autoBtn, &QPushButton::clicked, this, [this] { emit toolRequested("sketch.autoconstrain"); });
+  cons->addWidget(autoBtn, (i + 5) / 6, 0, 1, 6);
   col->addLayout(cons);
 
   // The running tool.
@@ -194,26 +205,17 @@ void SketchPalette::updateMode() {
   QString title = tr("Select");
   QString hint = tr("Click to select, drag points or lines to move them, Delete removes. Double-click a "
                     "dimension to change it.");
-  auto fromCreate = [&](const char* id) {
-    for (const ToolInfo& t : kCreate)
-      if (QString(t.id) == id) active = t.id, title = tr(t.title), hint = tr(t.hint);
-  };
-  switch (editor_->mode()) {
-    case M::Select: break;
-    case M::Line: fromCreate("sketch.line"); break;
-    case M::Rectangle: fromCreate("sketch.rectangle"); break;
-    case M::Circle: fromCreate("sketch.circle"); break;
-    case M::Arc: fromCreate("sketch.arc"); break;
-    case M::Point: fromCreate("sketch.point"); break;
-    case M::Dimension: fromCreate("sketch.dimension"); break;
-    case M::Constrain:
-      for (const ConstraintInfo& c : kConstraints) {
-        if (c.kind != editor_->constraintKind()) continue;
-        active = c.id;
-        title = tr(c.title);
-        hint = tr("Pick the geometry, or select it first and then click the tool. Esc stops.");
-      }
-      break;
+  if (editor_->mode() == M::Constrain) {
+    for (const ConstraintInfo& c : kConstraints) {
+      if (c.kind != editor_->constraintKind()) continue;
+      active = c.id;
+      title = tr(c.title);
+      hint = tr("Pick the geometry, or select it first and then click the tool. Esc stops.");
+    }
+  } else if (const SketchToolDef* t = sketchToolFor(editor_->mode()); t && editor_->mode() != M::Select) {
+    active = t->id;
+    title = tr(t->title);
+    hint = tr(t->hint);
   }
   if (editor_->mode() != M::Select) hint += tr(" Esc ends the tool.");
   for (auto it = tools_.begin(); it != tools_.end(); ++it) {

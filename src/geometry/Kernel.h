@@ -35,12 +35,21 @@ struct Plane {
 
 // One oriented piece of a closed 2D loop, in sketch (u, v) coordinates.
 struct Seg2 {
-  enum class Kind { Line, Arc, Circle } kind = Kind::Line;
+  enum class Kind { Line, Arc, Circle, Ellipse, EllipseArc, Spline } kind = Kind::Line;
   double x0 = 0, y0 = 0;  // start (line, arc)
   double x1 = 0, y1 = 0;  // end (line, arc)
-  double cx = 0, cy = 0;  // centre (arc, circle)
+  double cx = 0, cy = 0;  // centre (arc, circle, ellipse)
   double radius = 0;      // arc, circle
-  bool ccw = true;        // arc direction
+  bool ccw = true;        // arc / ellipse arc direction
+  // Ellipse (arc): major semi-axis vector (mx, my), minor radius, and for an
+  // arc the parameters t0 → t1; the point at t is c + cos t·M + sin t·minor·n
+  // (n = M turned a quarter turn left).
+  double mx = 0, my = 0, minor = 0, t0 = 0, t1 = 0;
+  // Spline: clamped B-spline (poles x,y pairs; full knot vector), walked
+  // backwards when `reversed`.
+  int degree = 3;
+  std::vector<double> poles, knots, weights;
+  bool reversed = false;
 };
 using Loop2 = std::vector<Seg2>;
 

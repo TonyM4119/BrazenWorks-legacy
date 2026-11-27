@@ -22,11 +22,23 @@ Small, shippable milestones. Each one should leave the app usable for something.
 - [x] Extrude: pick profiles in the view, live preview, distance, direction,
       join/cut/new body
 - [x] Edit a sketch later (double-click in the timeline or Browser)
+- [x] More sketch shapes: ellipse, fit-point spline, slot, polygon, 3-point and
+      centre rectangles, 2- and 3-point circles, centre and tangent arcs
+- [x] Sketch editing: trim, extend, break, fillet, chamfer, offset, mirror,
+      rectangular and circular patterns, move/copy, rotate, scale, project body
+      edges (fixed copies), Auto Constrain
+- [x] Solver checks: redundant dimensions offered as driven (reference) dimensions,
+      curves that would collapse are refused, dimension edits don't flip the
+      shape, the first dimension scales the sketch, loose ends are marked
+- [x] More constraints and dimensions: smooth (G2), parallel-line distance,
+      point/line/circle-to-circle gaps, ellipse radii; midpoint, extension and
+      alignment snapping
 - [x] Undo/redo of the whole document (Ctrl+Z, Ctrl+Y / Ctrl+Shift+Z)
 
 ## M2: Core modeling
 - [ ] Revolve; extrude manipulators in the canvas (drag arrow), extrude to faces
-- [ ] Sketch on faces and offset planes; trim, offset, fillet in sketches; project
+- [ ] Sketch on faces and offset planes; projected edges that follow the body
+      (needs persistent edge naming)
 - [ ] Edit feature → replay; timeline drag-reorder and suppress
 - [ ] Native document format (save/open), autosave
 - [ ] Fillet/chamfer on selected edges, shell, hole, press-pull

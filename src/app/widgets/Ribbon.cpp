@@ -7,6 +7,7 @@
 #include <QComboBox>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QGridLayout>
 #include <QMenu>
 #include <QStyle>
 #include <QTabBar>
@@ -93,18 +94,35 @@ void Ribbon::rebuildTools() {
     col->setContentsMargins(6, 0, 6, 0);
     col->setSpacing(1);
 
-    auto* buttons = new QHBoxLayout;
+    auto* buttons = new QGridLayout;
     buttons->setSpacing(2);
+    buttons->setContentsMargins(0, 0, 0, 0);
+    int visible = 0;
+    for (const Tool& t : g.tools) visible += t.menuOnly ? 0 : 1;
+    const int perRow = g.compact ? (visible + 1) / 2 : visible;
+    int slot = 0;
     auto* menu = new QMenu(box);
     for (const Tool& t : g.tools) {
       const bool enabled = t.tip.isEmpty();
       const QString tip = enabled ? t.label : QString("%1\n%2").arg(t.label, t.tip);
+      const QString id = t.id;
+      if (t.menuOnly) {
+        QAction* a = menu->addAction(icons::get(t.icon, theme::kSmallIconSize), t.label);
+        a->setEnabled(enabled);
+        connect(a, &QAction::triggered, this, [this, id] { emit toolTriggered(id); });
+        continue;
+      }
 
       auto* b = new AnimatedToolButton(box);
       b->setObjectName("ToolButton");
       b->setIcon(icons::get(t.icon, theme::kIconSize));
       b->setIconSize(QSize(theme::kIconSize, theme::kIconSize));
       b->setFixedSize(44, 44);
+      if (g.compact) {
+        b->setIcon(icons::get(t.icon, 18));
+        b->setIconSize(QSize(18, 18));
+        b->setFixedSize(26, 21);
+      }
       if (t.primary) {
         b->setObjectName("PrimaryToolButton");
         b->setIcon(icons::tinted(t.icon, theme::current().accentText, theme::kIconSize));
@@ -116,9 +134,9 @@ void Ribbon::rebuildTools() {
       buttons_.insert(t.id, b);
       b->setToolTip(tip);
       b->setEnabled(enabled);
-      const QString id = t.id;
       connect(b, &QToolButton::clicked, this, [this, id] { emit toolTriggered(id); });
-      buttons->addWidget(b);
+      buttons->addWidget(b, slot / std::max(perRow, 1), slot % std::max(perRow, 1));
+      ++slot;
 
       QAction* a = menu->addAction(icons::get(t.icon, theme::kSmallIconSize), t.label);
       a->setEnabled(enabled);

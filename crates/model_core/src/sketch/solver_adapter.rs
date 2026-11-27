@@ -45,6 +45,16 @@ pub enum Rule {
         b: PointRef,
         axis: CurveRef,
     },
+    /// Every point and radius of the curve stays where it is.
+    FixCurve(CurveRef),
+    /// Curvature continuity (G2) where a spline joins another curve.
+    Smooth(CurveRef, CurveRef),
+    /// Two curves mirror each other across a line.
+    SymmetricCurves {
+        a: CurveRef,
+        b: CurveRef,
+        axis: CurveRef,
+    },
     // ---- Dimensions (driving values) ----
     Distance {
         a: PointRef,
@@ -84,6 +94,44 @@ pub enum Rule {
         curve: CurveRef,
         value: f64,
     },
+    /// Distance between two (parallel) lines.
+    LineDistance {
+        a: CurveRef,
+        b: CurveRef,
+        value: f64,
+    },
+    ArcLength {
+        arc: CurveRef,
+        value: f64,
+    },
+    /// Gap between a point and a circle's edge (`inside`: point within it).
+    PointCircleDistance {
+        point: PointRef,
+        circle: CurveRef,
+        value: f64,
+        inside: bool,
+    },
+    /// Gap between a line and a circle's edge.
+    LineCircleDistance {
+        line: CurveRef,
+        circle: CurveRef,
+        value: f64,
+    },
+    /// Gap between two circles' edges (`inside`: one within the other).
+    CircleDistance {
+        a: CurveRef,
+        b: CurveRef,
+        value: f64,
+        inside: bool,
+    },
+    MajorRadius {
+        ellipse: CurveRef,
+        value: f64,
+    },
+    MinorRadius {
+        ellipse: CurveRef,
+        value: f64,
+    },
 }
 
 impl Rule {
@@ -99,6 +147,13 @@ impl Rule {
                 | Rule::Angle { .. }
                 | Rule::Radius { .. }
                 | Rule::Diameter { .. }
+                | Rule::LineDistance { .. }
+                | Rule::ArcLength { .. }
+                | Rule::PointCircleDistance { .. }
+                | Rule::LineCircleDistance { .. }
+                | Rule::CircleDistance { .. }
+                | Rule::MajorRadius { .. }
+                | Rule::MinorRadius { .. }
         )
     }
 }
@@ -108,6 +163,18 @@ pub enum CurveKind {
     Line,
     Circle,
     Arc,
+    Ellipse,
+    EllipticalArc,
+    Spline,
+}
+
+/// A spline as the solver evaluates it (clamped B-spline, mm).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SplineData {
+    pub degree: usize,
+    pub knots: Vec<f64>,
+    pub weights: Vec<f64>,
+    pub control_points: Vec<[f64; 2]>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -240,6 +307,75 @@ impl ConstraintSolver {
         Ok(self.push_curve(id))
     }
 
+    /// Ellipse from its centre, the end of its major axis and its minor radius.
+    pub fn add_ellipse(
+        &mut self,
+        centre: PointRef,
+        major: PointRef,
+        minor_radius: f64,
+    ) -> Result<CurveRef, SolverError> {
+        let id = self
+            .sys
+            .add_ellipse(self.p(centre)?, self.p(major)?, minor_radius)
+            .map_err(convert_error)?;
+        Ok(self.push_curve(id))
+    }
+
+    /// Elliptical arc, counter-clockwise (in the ellipse parameter) from `start` to `end`.
+    pub fn add_elliptical_arc(
+        &mut self,
+        centre: PointRef,
+        major: PointRef,
+        minor_radius: f64,
+        start: PointRef,
+        end: PointRef,
+    ) -> Result<CurveRef, SolverError> {
+        let id = self
+            .sys
+            .add_elliptical_arc(
+                self.p(centre)?,
+                self.p(major)?,
+                minor_radius,
+                self.p(start)?,
+                self.p(end)?,
+            )
+            .map_err(convert_error)?;
+        Ok(self.push_curve(id))
+    }
+
+    /// Cubic spline through fit points; `closed` makes it periodic.
+    pub fn add_spline(&mut self, fit: &[PointRef], closed: bool) -> Result<CurveRef, SolverError> {
+        let ids = fit
+            .iter()
+            .map(|&p| self.p(p))
+            .collect::<Result<Vec<_>, _>>()?;
+        let end = if closed {
+            engine::SplineEnd::Periodic
+        } else {
+            engine::SplineEnd::Natural
+        };
+        let id = self
+            .sys
+            .add_fitted_spline(&ids, [end, end])
+            .map_err(convert_error)?;
+        Ok(self.push_curve(id))
+    }
+
+    pub fn minor_radius(&self, c: CurveRef) -> Option<f64> {
+        self.sys.minor_radius(*self.curves.get(c.0 as usize)?)
+    }
+
+    /// The spline's current shape (control points follow the fit points).
+    pub fn spline(&self, c: CurveRef) -> Option<SplineData> {
+        let g = self.sys.spline(*self.curves.get(c.0 as usize)?)?;
+        Some(SplineData {
+            degree: g.degree,
+            knots: g.knots,
+            weights: g.weights,
+            control_points: g.control_points,
+        })
+    }
+
     pub fn point(&self, p: PointRef) -> Option<[f64; 2]> {
         self.sys.point(*self.points.get(p.0 as usize)?)
     }
@@ -258,7 +394,11 @@ impl ConstraintSolver {
             engine::EntityKind::Line => Some(CurveKind::Line),
             engine::EntityKind::Circle => Some(CurveKind::Circle),
             engine::EntityKind::Arc => Some(CurveKind::Arc),
-            _ => None,
+            engine::EntityKind::Ellipse => Some(CurveKind::Ellipse),
+            engine::EntityKind::EllipticalArc => Some(CurveKind::EllipticalArc),
+            engine::EntityKind::BSpline | engine::EntityKind::FittedSpline => {
+                Some(CurveKind::Spline)
+            }
         }
     }
 
@@ -490,6 +630,65 @@ impl ConstraintSolver {
             },
             Rule::Diameter { curve, value } => C::Diameter {
                 entity: self.c(curve)?,
+                value,
+            },
+            Rule::FixCurve(c) => C::FixEntity(self.c(c)?),
+            Rule::Smooth(a, b) => C::Smooth(self.c(a)?, self.c(b)?),
+            Rule::SymmetricCurves { a, b, axis } => C::SymmetricEntities {
+                a: self.c(a)?,
+                b: self.c(b)?,
+                axis: self.c(axis)?,
+            },
+            Rule::LineDistance { a, b, value } => C::LineDistance {
+                a: self.c(a)?,
+                b: self.c(b)?,
+                value,
+            },
+            Rule::ArcLength { arc, value } => C::ArcLength {
+                arc: self.c(arc)?,
+                value,
+            },
+            Rule::PointCircleDistance {
+                point,
+                circle,
+                value,
+                inside,
+            } => C::TangentPointDistance {
+                circle: self.c(circle)?,
+                point: self.p(point)?,
+                value,
+                inside,
+                far: false,
+            },
+            Rule::LineCircleDistance {
+                line,
+                circle,
+                value,
+            } => C::TangentDistance {
+                circle: self.c(circle)?,
+                line: self.c(line)?,
+                value,
+                far: false,
+            },
+            Rule::CircleDistance {
+                a,
+                b,
+                value,
+                inside,
+            } => C::TangentCircleDistance {
+                a: self.c(a)?,
+                b: self.c(b)?,
+                value,
+                inside,
+                far_a: false,
+                far_b: false,
+            },
+            Rule::MajorRadius { ellipse, value } => C::MajorRadius {
+                ellipse: self.c(ellipse)?,
+                value,
+            },
+            Rule::MinorRadius { ellipse, value } => C::MinorRadius {
+                ellipse: self.c(ellipse)?,
                 value,
             },
         })

@@ -34,6 +34,10 @@ qt_add_executable(app
   sketch/Pickers.cpp
   sketch/Pickers.h
   sketch/SketchEditor.cpp
+  sketch/SketchModify.cpp
+  sketch/SketchShapes.cpp
+  sketch/SketchTools.cpp
+  sketch/SketchTools.h
   sketch/SketchPalette.cpp
   sketch/SketchPalette.h
   sketch/SketchEditor.h)

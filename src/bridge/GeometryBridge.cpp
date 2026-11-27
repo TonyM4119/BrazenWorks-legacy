@@ -46,9 +46,14 @@ geom::Loop2 toLoop(const LoopData& data) {
   geom::Loop2 loop;
   for (const SegmentData& d : data.segments) {
     geom::Seg2 s;
-    s.kind = d.kind == SegmentKind::Arc      ? geom::Seg2::Kind::Arc
-             : d.kind == SegmentKind::Circle ? geom::Seg2::Kind::Circle
-                                             : geom::Seg2::Kind::Line;
+    switch (d.kind) {
+      case SegmentKind::Arc: s.kind = geom::Seg2::Kind::Arc; break;
+      case SegmentKind::Circle: s.kind = geom::Seg2::Kind::Circle; break;
+      case SegmentKind::Ellipse: s.kind = geom::Seg2::Kind::Ellipse; break;
+      case SegmentKind::EllipseArc: s.kind = geom::Seg2::Kind::EllipseArc; break;
+      case SegmentKind::Spline: s.kind = geom::Seg2::Kind::Spline; break;
+      default: s.kind = geom::Seg2::Kind::Line; break;
+    }
     s.x0 = d.x0;
     s.y0 = d.y0;
     s.x1 = d.x1;
@@ -57,6 +62,16 @@ geom::Loop2 toLoop(const LoopData& data) {
     s.cy = d.cy;
     s.radius = d.radius;
     s.ccw = d.ccw;
+    s.mx = d.mx;
+    s.my = d.my;
+    s.minor = d.minor;
+    s.t0 = d.t0;
+    s.t1 = d.t1;
+    s.degree = int(d.degree);
+    s.poles.assign(d.poles.begin(), d.poles.end());
+    s.knots.assign(d.knots.begin(), d.knots.end());
+    s.weights.assign(d.weights.begin(), d.weights.end());
+    s.reversed = d.reversed;
     loop.push_back(s);
   }
   return loop;

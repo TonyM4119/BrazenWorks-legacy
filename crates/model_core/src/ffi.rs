@@ -9,12 +9,13 @@
 use crate::kernel::{self, Kernel};
 use crate::sketch::{
     find_regions, ConstraintId, EntityId, Geometry, Loop, OriginPlane, Region, RegionKey, Segment,
-    Sketch, SketchConstraint, SketchError, SketchPlane, SolveStatus, SolveSummary,
+    Sketch, SketchConstraint, SketchError, SketchPlane, SolveStatus, SolveSummary, Transform,
 };
 use crate::timeline::{ExtrudeSource, Feature, FeatureId, FeatureKind, Timeline};
 use crate::units::{self, LengthUnit};
 use cxx::UniquePtr;
 
+#[allow(clippy::too_many_arguments)]
 #[cxx::bridge(namespace = "model")]
 mod bridge {
     enum ProfileKind {
@@ -77,6 +78,9 @@ mod bridge {
         Line,
         Circle,
         Arc,
+        Ellipse,
+        EllipticalArc,
+        Spline,
     }
 
     /// One sketch entity, flattened for drawing. Point: (x0, y0). Line: p0→p1.
@@ -96,6 +100,22 @@ mod bridge {
         x2: f64,
         y2: f64,
         radius: f64,
+        /// Ellipse / elliptical arc: centre p0, major-axis end p1, minor
+        /// radius `minor` (radius = major radius); arc start p2, end p3.
+        p3: u64,
+        x3: f64,
+        y3: f64,
+        minor: f64,
+        /// Spline: fit points in order; closed = periodic.
+        fit: Vec<u64>,
+        closed: bool,
+        /// Splines: the exact curve (clamped B-spline). Ellipses and splines:
+        /// a polyline along the curve for picking.
+        degree: usize,
+        poles: Vec<f64>,
+        knots: Vec<f64>,
+        weights: Vec<f64>,
+        samples: Vec<f64>,
     }
 
     enum ConstraintKind {
@@ -122,6 +142,14 @@ mod bridge {
         Angle,
         Radius,
         Diameter,
+        Smooth,
+        LineDistance,
+        ArcLength,
+        PointCircleDistance,
+        LineCircleDistance,
+        CircleDistance,
+        MajorRadius,
+        MinorRadius,
     }
 
     /// A constraint: entity ids a, b (and c for Symmetric's axis); value for dimensions.
@@ -134,6 +162,10 @@ mod bridge {
         value: f64,
         is_dimension: bool,
         conflicting: bool,
+        /// Reference dimension: follows the geometry.
+        driven: bool,
+        /// Implied by the other constraints.
+        redundant: bool,
     }
 
     enum SketchSolveStatus {
@@ -146,6 +178,9 @@ mod bridge {
         status: SketchSolveStatus,
         dof: usize,
         conflicting: Vec<u64>,
+        redundant: Vec<u64>,
+        /// Curves that collapsed to nothing.
+        degenerate: Vec<u64>,
     }
 
     /// Result of adding a constraint: refused ones say why and with what.
@@ -154,6 +189,9 @@ mod bridge {
         id: u64,
         conflicts: Vec<u64>,
         message: String,
+        /// Refused because the other constraints already imply it (a
+        /// dimension can be added as driven instead).
+        redundant: bool,
     }
 
     // ---- Profiles ----
@@ -162,6 +200,9 @@ mod bridge {
         Line,
         Arc,
         Circle,
+        Ellipse,
+        EllipseArc,
+        Spline,
     }
 
     /// One oriented piece of a loop in sketch coordinates. Line/arc: start
@@ -176,6 +217,18 @@ mod bridge {
         cy: f64,
         radius: f64,
         ccw: bool,
+        /// Ellipse (arc): major semi-axis vector, minor radius, parameters.
+        mx: f64,
+        my: f64,
+        minor: f64,
+        t0: f64,
+        t1: f64,
+        /// Spline: clamped B-spline, walked backwards when `reversed`.
+        degree: usize,
+        poles: Vec<f64>,
+        knots: Vec<f64>,
+        weights: Vec<f64>,
+        reversed: bool,
     }
 
     struct LoopData {
@@ -282,6 +335,98 @@ mod bridge {
             centre: u64,
             radius: f64,
         ) -> Result<u64>;
+        fn sketch_add_ellipse(
+            t: &mut Timeline,
+            sketch: u64,
+            centre: u64,
+            major: u64,
+            minor: f64,
+        ) -> Result<u64>;
+        fn sketch_add_elliptical_arc(
+            t: &mut Timeline,
+            sketch: u64,
+            centre: u64,
+            major: u64,
+            minor: f64,
+            start: u64,
+            end: u64,
+        ) -> Result<u64>;
+        fn sketch_add_spline(
+            t: &mut Timeline,
+            sketch: u64,
+            points: Vec<u64>,
+            closed: bool,
+        ) -> Result<u64>;
+        /// A reference dimension (measures, never refused).
+        fn sketch_add_driven(
+            t: &mut Timeline,
+            sketch: u64,
+            kind: ConstraintKind,
+            a: u64,
+            b: u64,
+            c: u64,
+        ) -> ConstraintResult;
+        fn sketch_set_driven(
+            t: &mut Timeline,
+            sketch: u64,
+            constraint: u64,
+            driven: bool,
+        ) -> ConstraintResult;
+        // ---- Sketch editing tools ----
+        fn sketch_trim(t: &mut Timeline, sketch: u64, curve: u64, x: f64, y: f64) -> Result<()>;
+        fn sketch_break(t: &mut Timeline, sketch: u64, curve: u64, x: f64, y: f64) -> Result<()>;
+        fn sketch_extend(t: &mut Timeline, sketch: u64, curve: u64, x: f64, y: f64) -> Result<()>;
+        fn sketch_fillet(t: &mut Timeline, sketch: u64, corner: u64, radius: f64) -> Result<u64>;
+        fn sketch_chamfer(t: &mut Timeline, sketch: u64, corner: u64, distance: f64)
+            -> Result<u64>;
+        fn sketch_offset(
+            t: &mut Timeline,
+            sketch: u64,
+            curves: Vec<u64>,
+            distance: f64,
+            x: f64,
+            y: f64,
+        ) -> Result<Vec<u64>>;
+        fn sketch_mirror(
+            t: &mut Timeline,
+            sketch: u64,
+            curves: Vec<u64>,
+            axis: u64,
+        ) -> Result<Vec<u64>>;
+        fn sketch_pattern_rect(
+            t: &mut Timeline,
+            sketch: u64,
+            curves: Vec<u64>,
+            dx: f64,
+            dy: f64,
+            nx: usize,
+            ny: usize,
+            sx: f64,
+            sy: f64,
+        ) -> Result<Vec<u64>>;
+        fn sketch_pattern_circ(
+            t: &mut Timeline,
+            sketch: u64,
+            curves: Vec<u64>,
+            cx: f64,
+            cy: f64,
+            count: usize,
+            angle: f64,
+        ) -> Result<Vec<u64>>;
+        /// kind 0 move (a, b = dx, dy), 1 rotate (a, b centre, c angle),
+        /// 2 scale (a, b centre, c factor). `copy` makes copies instead.
+        fn sketch_transform(
+            t: &mut Timeline,
+            sketch: u64,
+            curves: Vec<u64>,
+            kind: u8,
+            a: f64,
+            b: f64,
+            c: f64,
+            copy: bool,
+        ) -> Result<Vec<u64>>;
+        fn sketch_auto_constrain(t: &mut Timeline, sketch: u64) -> Result<usize>;
+        fn sketch_loose_ends(t: &Timeline, sketch: u64) -> Result<Vec<u64>>;
         fn sketch_add_arc(
             t: &mut Timeline,
             sketch: u64,
@@ -456,8 +601,18 @@ fn loop_data(l: &Loop) -> bridge::LoopData {
             cy: 0.0,
             radius: 0.0,
             ccw: true,
+            mx: 0.0,
+            my: 0.0,
+            minor: 0.0,
+            t0: 0.0,
+            t1: 0.0,
+            degree: 0,
+            poles: Vec::new(),
+            knots: Vec::new(),
+            weights: Vec::new(),
+            reversed: false,
         };
-        match *s {
+        match s.clone() {
             Segment::Line { a, b } => ([d.x0, d.y0], [d.x1, d.y1]) = (a, b),
             Segment::Arc {
                 centre,
@@ -475,6 +630,45 @@ fn loop_data(l: &Loop) -> bridge::LoopData {
                 d.kind = bridge::SegmentKind::Circle;
                 [d.cx, d.cy] = centre;
                 d.radius = radius;
+            }
+            Segment::Ellipse {
+                centre,
+                major,
+                minor,
+            } => {
+                d.kind = bridge::SegmentKind::Ellipse;
+                [d.cx, d.cy] = centre;
+                [d.mx, d.my] = major;
+                d.minor = minor;
+            }
+            Segment::EllipseArc {
+                centre,
+                major,
+                minor,
+                t0,
+                t1,
+                ccw,
+            } => {
+                d.kind = bridge::SegmentKind::EllipseArc;
+                [d.cx, d.cy] = centre;
+                [d.mx, d.my] = major;
+                (d.minor, d.t0, d.t1, d.ccw) = (minor, t0, t1, ccw);
+                [d.x0, d.y0] = s.point_at(0.0);
+                [d.x1, d.y1] = s.point_at(1.0);
+            }
+            Segment::Spline { data, reversed } => {
+                d.kind = bridge::SegmentKind::Spline;
+                d.degree = data.degree;
+                d.poles = data
+                    .control_points
+                    .iter()
+                    .flat_map(|p| [p[0], p[1]])
+                    .collect();
+                d.knots = data.knots.clone();
+                d.weights = data.weights.clone();
+                d.reversed = reversed;
+                [d.x0, d.y0] = s.point_at(0.0);
+                [d.x1, d.y1] = s.point_at(1.0);
             }
         }
         d
@@ -730,6 +924,28 @@ fn to_constraint(
         K::Angle => S::Angle { a, b, value },
         K::Radius => S::Radius { curve: a, value },
         K::Diameter => S::Diameter { curve: a, value },
+        K::Smooth => S::Smooth(a, b),
+        K::LineDistance => S::LineDistance { a, b, value },
+        K::ArcLength => S::ArcLength { arc: a, value },
+        K::PointCircleDistance => S::PointCircleDistance {
+            point: a,
+            circle: b,
+            value,
+            inside: false, // set from the geometry when added
+        },
+        K::LineCircleDistance => S::LineCircleDistance {
+            line: a,
+            circle: b,
+            value,
+        },
+        K::CircleDistance => S::CircleDistance {
+            a,
+            b,
+            value,
+            inside: false,
+        },
+        K::MajorRadius => S::MajorRadius { ellipse: a, value },
+        K::MinorRadius => S::MinorRadius { ellipse: a, value },
         _ => return None,
     })
 }
@@ -762,6 +978,18 @@ fn from_constraint(c: &SketchConstraint) -> (bridge::ConstraintKind, u64, u64, u
         S::Angle { a, b, .. } => (K::Angle, a.0, b.0, 0, v),
         S::Radius { curve, .. } => (K::Radius, curve.0, 0, 0, v),
         S::Diameter { curve, .. } => (K::Diameter, curve.0, 0, 0, v),
+        S::Smooth(a, b) => (K::Smooth, a.0, b.0, 0, v),
+        S::LineDistance { a, b, .. } => (K::LineDistance, a.0, b.0, 0, v),
+        S::ArcLength { arc, .. } => (K::ArcLength, arc.0, 0, 0, v),
+        S::PointCircleDistance { point, circle, .. } => {
+            (K::PointCircleDistance, point.0, circle.0, 0, v)
+        }
+        S::LineCircleDistance { line, circle, .. } => {
+            (K::LineCircleDistance, line.0, circle.0, 0, v)
+        }
+        S::CircleDistance { a, b, .. } => (K::CircleDistance, a.0, b.0, 0, v),
+        S::MajorRadius { ellipse, .. } => (K::MajorRadius, ellipse.0, 0, 0, v),
+        S::MinorRadius { ellipse, .. } => (K::MinorRadius, ellipse.0, 0, 0, v),
     }
 }
 
@@ -774,12 +1002,6 @@ fn sketch_add_constraint(
     c: u64,
     value: f64,
 ) -> bridge::ConstraintResult {
-    let refused = |message: String, conflicts: Vec<u64>| bridge::ConstraintResult {
-        ok: false,
-        id: 0,
-        conflicts,
-        message,
-    };
     let s = match sketch_mut(t, sketch) {
         Ok(s) => s,
         Err(m) => return refused(m, vec![]),
@@ -787,19 +1009,119 @@ fn sketch_add_constraint(
     let Some(constraint) = to_constraint(kind, a, b, c, value) else {
         return refused("unknown constraint kind".into(), vec![]);
     };
-    match s.add_constraint(constraint) {
+    constraint_result(s.add_constraint(constraint))
+}
+
+fn refused(message: String, conflicts: Vec<u64>) -> bridge::ConstraintResult {
+    bridge::ConstraintResult {
+        ok: false,
+        id: 0,
+        conflicts,
+        message,
+        redundant: false,
+    }
+}
+
+fn constraint_result(r: Result<ConstraintId, SketchError>) -> bridge::ConstraintResult {
+    match r {
         Ok(id) => bridge::ConstraintResult {
             ok: true,
             id: id.0,
             conflicts: vec![],
             message: String::new(),
+            redundant: false,
         },
         Err(SketchError::Conflicts(ids)) => {
             let message = SketchError::Conflicts(ids.clone()).to_string();
             refused(message, ids.iter().map(|c| c.0).collect())
         }
+        Err(SketchError::Redundant) => bridge::ConstraintResult {
+            redundant: true,
+            ..refused(SketchError::Redundant.to_string(), vec![])
+        },
         Err(e) => refused(e.to_string(), vec![]),
     }
+}
+
+fn sketch_add_driven(
+    t: &mut Timeline,
+    sketch: u64,
+    kind: bridge::ConstraintKind,
+    a: u64,
+    b: u64,
+    c: u64,
+) -> bridge::ConstraintResult {
+    let s = match sketch_mut(t, sketch) {
+        Ok(s) => s,
+        Err(m) => return refused(m, vec![]),
+    };
+    let Some(constraint) = to_constraint(kind, a, b, c, 1.0) else {
+        return refused("unknown constraint kind".into(), vec![]);
+    };
+    constraint_result(s.add_driven(constraint))
+}
+
+fn sketch_set_driven(
+    t: &mut Timeline,
+    sketch: u64,
+    constraint: u64,
+    driven: bool,
+) -> bridge::ConstraintResult {
+    let s = match sketch_mut(t, sketch) {
+        Ok(s) => s,
+        Err(m) => return refused(m, vec![]),
+    };
+    constraint_result(
+        s.set_driven(ConstraintId(constraint), driven)
+            .map(|()| ConstraintId(constraint)),
+    )
+}
+
+fn sketch_add_ellipse(
+    t: &mut Timeline,
+    sketch: u64,
+    centre: u64,
+    major: u64,
+    minor: f64,
+) -> Result<u64, String> {
+    sketch_mut(t, sketch)?
+        .add_ellipse(EntityId(centre), EntityId(major), minor)
+        .map(|e| e.0)
+        .map_err(err)
+}
+
+fn sketch_add_elliptical_arc(
+    t: &mut Timeline,
+    sketch: u64,
+    centre: u64,
+    major: u64,
+    minor: f64,
+    start: u64,
+    end: u64,
+) -> Result<u64, String> {
+    sketch_mut(t, sketch)?
+        .add_elliptical_arc(
+            EntityId(centre),
+            EntityId(major),
+            minor,
+            EntityId(start),
+            EntityId(end),
+        )
+        .map(|e| e.0)
+        .map_err(err)
+}
+
+fn sketch_add_spline(
+    t: &mut Timeline,
+    sketch: u64,
+    points: Vec<u64>,
+    closed: bool,
+) -> Result<u64, String> {
+    let ids: Vec<EntityId> = points.into_iter().map(EntityId).collect();
+    sketch_mut(t, sketch)?
+        .add_spline(&ids, closed)
+        .map(|e| e.0)
+        .map_err(err)
 }
 
 fn sketch_remove_constraint(t: &mut Timeline, sketch: u64, constraint: u64) -> Result<(), String> {
@@ -817,6 +1139,8 @@ fn solve_info(s: &SolveSummary) -> bridge::SketchSolveInfo {
         },
         dof: s.dof,
         conflicting: s.conflicting.iter().map(|c| c.0).collect(),
+        redundant: s.redundant.iter().map(|c| c.0).collect(),
+        degenerate: s.degenerate.iter().map(|e| e.0).collect(),
     }
 }
 
@@ -871,8 +1195,29 @@ fn sketch_entities(t: &mut Timeline, sketch: u64) -> Result<Vec<bridge::SketchEn
                 x2: 0.0,
                 y2: 0.0,
                 radius: 0.0,
+                p3: 0,
+                x3: 0.0,
+                y3: 0.0,
+                minor: 0.0,
+                fit: Vec::new(),
+                closed: false,
+                degree: 0,
+                poles: Vec::new(),
+                knots: Vec::new(),
+                weights: Vec::new(),
+                samples: Vec::new(),
             };
-            match e.geometry {
+            let sample = |seg: &Segment, closed: bool| -> Vec<f64> {
+                let n = 96;
+                (0..=n)
+                    .filter(|&i| !(closed && i == n))
+                    .flat_map(|i| {
+                        let p = seg.point_at(i as f64 / n as f64);
+                        [p[0], p[1]]
+                    })
+                    .collect()
+            };
+            match e.geometry.clone() {
                 Geometry::Point { x, y } => (info.x0, info.y0) = (x, y),
                 Geometry::Line { start, end } => {
                     info.kind = bridge::SketchEntityKind::Line;
@@ -894,10 +1239,94 @@ fn sketch_entities(t: &mut Timeline, sketch: u64) -> Result<Vec<bridge::SketchEn
                     [info.x2, info.y2] = pos(s, end);
                     info.radius = s.radius(e.id).unwrap_or(0.0);
                 }
+                Geometry::Ellipse {
+                    centre,
+                    major,
+                    minor_radius,
+                } => {
+                    info.kind = bridge::SketchEntityKind::Ellipse;
+                    (info.p0, info.p1) = (centre.0, major.0);
+                    let (c, m) = (pos(s, centre), pos(s, major));
+                    ([info.x0, info.y0], [info.x1, info.y1]) = (c, m);
+                    info.radius = (m[0] - c[0]).hypot(m[1] - c[1]);
+                    info.minor = minor_radius;
+                    if info.radius > 0.0 && minor_radius > 0.0 {
+                        let seg = Segment::Ellipse {
+                            centre: c,
+                            major: [m[0] - c[0], m[1] - c[1]],
+                            minor: minor_radius,
+                        };
+                        info.samples = sample(&seg, true);
+                    }
+                }
+                Geometry::EllipticalArc {
+                    centre,
+                    major,
+                    minor_radius,
+                    start,
+                    end,
+                } => {
+                    info.kind = bridge::SketchEntityKind::EllipticalArc;
+                    (info.p0, info.p1, info.p2, info.p3) = (centre.0, major.0, start.0, end.0);
+                    let (c, m) = (pos(s, centre), pos(s, major));
+                    ([info.x0, info.y0], [info.x1, info.y1]) = (c, m);
+                    [info.x2, info.y2] = pos(s, start);
+                    [info.x3, info.y3] = pos(s, end);
+                    info.radius = (m[0] - c[0]).hypot(m[1] - c[1]);
+                    info.minor = minor_radius;
+                    if info.radius > 0.0 && minor_radius > 0.0 {
+                        let mv = [m[0] - c[0], m[1] - c[1]];
+                        let seg = Segment::EllipseArc {
+                            centre: c,
+                            major: mv,
+                            minor: minor_radius,
+                            t0: ellipse_param_of(c, mv, minor_radius, pos(s, start)),
+                            t1: ellipse_param_of(c, mv, minor_radius, pos(s, end)),
+                            ccw: true,
+                        };
+                        info.samples = sample(&seg, false);
+                    }
+                }
+                Geometry::Spline { points, closed } => {
+                    info.kind = bridge::SketchEntityKind::Spline;
+                    info.fit = points.iter().map(|p| p.0).collect();
+                    info.closed = closed;
+                    if let Some(&first) = points.first() {
+                        info.p0 = first.0;
+                        [info.x0, info.y0] = pos(s, first);
+                    }
+                    if let Some(&last) = points.last() {
+                        info.p1 = last.0;
+                        [info.x1, info.y1] = pos(s, last);
+                    }
+                    if let Some(data) = s.spline(e.id) {
+                        info.degree = data.degree;
+                        info.poles = data
+                            .control_points
+                            .iter()
+                            .flat_map(|p| [p[0], p[1]])
+                            .collect();
+                        info.knots = data.knots.clone();
+                        info.weights = data.weights.clone();
+                        let seg = Segment::Spline {
+                            data: data.clone(),
+                            reversed: false,
+                        };
+                        info.samples = sample(&seg, closed);
+                    }
+                }
             }
             info
         })
         .collect())
+}
+
+/// Eccentric-angle parameter of a point on an ellipse (as profiles use it).
+fn ellipse_param_of(c: [f64; 2], major: [f64; 2], minor: f64, p: [f64; 2]) -> f64 {
+    let a = major[0].hypot(major[1]);
+    let (ux, uy) = (major[0] / a, major[1] / a);
+    let (dx, dy) = (p[0] - c[0], p[1] - c[1]);
+    ((-dx * uy + dy * ux) / minor).atan2((dx * ux + dy * uy) / a)
 }
 
 fn sketch_constraints(
@@ -919,6 +1348,8 @@ fn sketch_constraints(
                 value,
                 is_dimension: c.is_dimension(),
                 conflicting: summary.conflicting.contains(id),
+                driven: s.is_driven(*id),
+                redundant: summary.redundant.contains(id),
             }
         })
         .collect())
@@ -1056,4 +1487,146 @@ fn timeline_sketch_consumed(t: &Timeline, sketch: u64) -> bool {
             Some(FeatureKind::Extrude { source: ExtrudeSource::Sketch { sketch: s, .. }, .. }) if s.0 == sketch
         )
     })
+}
+
+// ---- Sketch editing tools ----------------------------------------------------
+
+fn ids(v: Vec<u64>) -> Vec<EntityId> {
+    v.into_iter().map(EntityId).collect()
+}
+
+fn raw(v: Vec<EntityId>) -> Vec<u64> {
+    v.into_iter().map(|e| e.0).collect()
+}
+
+fn sketch_trim(t: &mut Timeline, sketch: u64, curve: u64, x: f64, y: f64) -> Result<(), String> {
+    sketch_mut(t, sketch)?
+        .trim(EntityId(curve), [x, y])
+        .map_err(err)
+}
+
+fn sketch_break(t: &mut Timeline, sketch: u64, curve: u64, x: f64, y: f64) -> Result<(), String> {
+    sketch_mut(t, sketch)?
+        .break_at(EntityId(curve), [x, y])
+        .map_err(err)
+}
+
+fn sketch_extend(t: &mut Timeline, sketch: u64, curve: u64, x: f64, y: f64) -> Result<(), String> {
+    sketch_mut(t, sketch)?
+        .extend(EntityId(curve), [x, y])
+        .map_err(err)
+}
+
+fn sketch_fillet(t: &mut Timeline, sketch: u64, corner: u64, radius: f64) -> Result<u64, String> {
+    sketch_mut(t, sketch)?
+        .fillet(EntityId(corner), radius)
+        .map(|e| e.0)
+        .map_err(err)
+}
+
+fn sketch_chamfer(
+    t: &mut Timeline,
+    sketch: u64,
+    corner: u64,
+    distance: f64,
+) -> Result<u64, String> {
+    sketch_mut(t, sketch)?
+        .chamfer(EntityId(corner), distance)
+        .map(|e| e.0)
+        .map_err(err)
+}
+
+fn sketch_offset(
+    t: &mut Timeline,
+    sketch: u64,
+    curves: Vec<u64>,
+    distance: f64,
+    x: f64,
+    y: f64,
+) -> Result<Vec<u64>, String> {
+    sketch_mut(t, sketch)?
+        .offset(&ids(curves), distance, [x, y])
+        .map(raw)
+        .map_err(err)
+}
+
+fn sketch_mirror(
+    t: &mut Timeline,
+    sketch: u64,
+    curves: Vec<u64>,
+    axis: u64,
+) -> Result<Vec<u64>, String> {
+    sketch_mut(t, sketch)?
+        .mirror(&ids(curves), EntityId(axis))
+        .map(raw)
+        .map_err(err)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sketch_pattern_rect(
+    t: &mut Timeline,
+    sketch: u64,
+    curves: Vec<u64>,
+    dx: f64,
+    dy: f64,
+    nx: usize,
+    ny: usize,
+    sx: f64,
+    sy: f64,
+) -> Result<Vec<u64>, String> {
+    sketch_mut(t, sketch)?
+        .pattern_rect(&ids(curves), [dx, dy], nx, ny, sx, sy)
+        .map(raw)
+        .map_err(err)
+}
+
+fn sketch_pattern_circ(
+    t: &mut Timeline,
+    sketch: u64,
+    curves: Vec<u64>,
+    cx: f64,
+    cy: f64,
+    count: usize,
+    angle: f64,
+) -> Result<Vec<u64>, String> {
+    sketch_mut(t, sketch)?
+        .pattern_circ(&ids(curves), [cx, cy], count, angle)
+        .map(raw)
+        .map_err(err)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn sketch_transform(
+    t: &mut Timeline,
+    sketch: u64,
+    curves: Vec<u64>,
+    kind: u8,
+    a: f64,
+    b: f64,
+    c: f64,
+    copy: bool,
+) -> Result<Vec<u64>, String> {
+    let tr = match kind {
+        0 => Transform::Move { dx: a, dy: b },
+        1 => Transform::Rotate {
+            centre: [a, b],
+            angle: c,
+        },
+        _ => Transform::Scale {
+            centre: [a, b],
+            factor: c,
+        },
+    };
+    sketch_mut(t, sketch)?
+        .transform(&ids(curves), tr, copy)
+        .map(raw)
+        .map_err(err)
+}
+
+fn sketch_auto_constrain(t: &mut Timeline, sketch: u64) -> Result<usize, String> {
+    Ok(sketch_mut(t, sketch)?.auto_constrain())
+}
+
+fn sketch_loose_ends(t: &Timeline, sketch: u64) -> Result<Vec<u64>, String> {
+    Ok(raw(sketch_ref(t, sketch)?.loose_ends()))
 }

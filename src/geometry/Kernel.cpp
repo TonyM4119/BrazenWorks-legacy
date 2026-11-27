@@ -7,6 +7,12 @@
 #include <BRep_Builder.hxx>
 #include <TopoDS_Compound.hxx>
 #include <GC_MakeArcOfCircle.hxx>
+#include <GC_MakeArcOfEllipse.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <TColStd_Array1OfInteger.hxx>
+#include <TColStd_Array1OfReal.hxx>
+#include <TColgp_Array1OfPnt.hxx>
+#include <gp_Elips.hxx>
 #include <Geom_TrimmedCurve.hxx>
 #include <ShapeFix_Face.hxx>
 #include <gp_Ax3.hxx>
@@ -75,6 +81,61 @@ TopoDS_Edge makeEdge(const Plane& plane, const Seg2& s) {
                              worldPoint(plane, s.x1, s.y1));
       if (!arc.IsDone()) return {};
       return BRepBuilderAPI_MakeEdge(arc.Value()).Edge();
+    }
+    case Seg2::Kind::Ellipse:
+    case Seg2::Kind::EllipseArc: {
+      constexpr double kHalfPi = 1.5707963267948966;
+      const double a = std::hypot(s.mx, s.my);
+      if (a <= 0 || s.minor <= 0) return {};
+      // OCCT wants the major radius ≥ the minor: swap the axes if needed,
+      // which shifts the parameter by a quarter turn.
+      std::array<double, 2> u{s.mx / a, s.my / a};
+      double major = a, minor = s.minor, shift = 0;
+      if (minor > major) {
+        u = {-u[1], u[0]};
+        std::swap(major, minor);
+        shift = -kHalfPi;
+      }
+      const std::array<double, 3> xDir{u[0] * plane.xAxis[0] + u[1] * plane.yAxis[0],
+                                       u[0] * plane.xAxis[1] + u[1] * plane.yAxis[1],
+                                       u[0] * plane.xAxis[2] + u[1] * plane.yAxis[2]};
+      const gp_Elips elips(gp_Ax2(worldPoint(plane, s.cx, s.cy), dir(plane.normal), dir(xDir)), major, minor);
+      if (s.kind == Seg2::Kind::Ellipse) return BRepBuilderAPI_MakeEdge(elips).Edge();
+      const double t0 = s.t0 + shift, t1 = s.t1 + shift;
+      GC_MakeArcOfEllipse arc(elips, s.ccw ? t0 : t1, s.ccw ? t1 : t0, Standard_True);
+      if (!arc.IsDone()) return {};
+      TopoDS_Edge e = BRepBuilderAPI_MakeEdge(arc.Value()).Edge();
+      return s.ccw ? e : TopoDS::Edge(e.Reversed());
+    }
+    case Seg2::Kind::Spline: {
+      const int n = int(s.poles.size() / 2);
+      if (n < 2 || s.degree < 1 || int(s.knots.size()) != n + s.degree + 1) return {};
+      TColgp_Array1OfPnt poles(1, n);
+      TColStd_Array1OfReal weights(1, n);
+      for (int i = 0; i < n; ++i) {
+        poles.SetValue(i + 1, worldPoint(plane, s.poles[2 * i], s.poles[2 * i + 1]));
+        weights.SetValue(i + 1, i < int(s.weights.size()) ? s.weights[i] : 1.0);
+      }
+      // Full knot vector → distinct knots with multiplicities.
+      std::vector<double> distinct;
+      std::vector<int> mults;
+      for (double k : s.knots) {
+        if (!distinct.empty() && std::abs(k - distinct.back()) < 1e-12) {
+          ++mults.back();
+        } else {
+          distinct.push_back(k);
+          mults.push_back(1);
+        }
+      }
+      TColStd_Array1OfReal knots(1, int(distinct.size()));
+      TColStd_Array1OfInteger multiplicities(1, int(distinct.size()));
+      for (int i = 0; i < int(distinct.size()); ++i) {
+        knots.SetValue(i + 1, distinct[i]);
+        multiplicities.SetValue(i + 1, mults[i]);
+      }
+      Handle(Geom_BSplineCurve) curve = new Geom_BSplineCurve(poles, weights, knots, multiplicities, s.degree);
+      TopoDS_Edge e = BRepBuilderAPI_MakeEdge(curve).Edge();
+      return s.reversed ? TopoDS::Edge(e.Reversed()) : e;
     }
   }
   return {};

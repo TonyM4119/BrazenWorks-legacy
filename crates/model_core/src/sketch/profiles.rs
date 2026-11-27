@@ -23,14 +23,16 @@
 use std::collections::{BTreeSet, HashMap};
 use std::f64::consts::{PI, TAU};
 
-use super::model::{EntityId, Geometry, Sketch, SketchConstraint};
+use super::model::{EntityId, Geometry, Sketch, SketchConstraint, SplineData};
 
 const MERGE_TOL: f64 = 1e-6;
 const MIN_AREA: f64 = 1e-9;
 const ARC_SAMPLES: usize = 24;
+/// Samples along an ellipse or spline (outline and areas).
+const CURVE_SAMPLES: usize = 96;
 
 /// One oriented piece of a loop, in sketch coordinates.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Segment {
     Line {
         a: [f64; 2],
@@ -49,12 +51,35 @@ pub enum Segment {
         centre: [f64; 2],
         radius: f64,
     },
+    /// A whole ellipse, counter-clockwise. `major` is the major semi-axis
+    /// vector; the minor axis is `major` turned a quarter turn left.
+    Ellipse {
+        centre: [f64; 2],
+        major: [f64; 2],
+        minor: f64,
+    },
+    /// Part of an ellipse from parameter `t0` to `t1` (counter-clockwise
+    /// when `ccw`); the point at `t` is `centre + cos t·major + sin t·minor·n`.
+    EllipseArc {
+        centre: [f64; 2],
+        major: [f64; 2],
+        minor: f64,
+        t0: f64,
+        t1: f64,
+        ccw: bool,
+    },
+    /// A clamped B-spline (rational if the weights differ), walked backwards
+    /// when `reversed`.
+    Spline {
+        data: SplineData,
+        reversed: bool,
+    },
 }
 
 impl Segment {
     /// A point halfway along the segment.
     pub fn midpoint(&self) -> [f64; 2] {
-        match *self {
+        match self.clone() {
             Segment::Line { a, b } => [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0],
             Segment::Arc {
                 centre,
@@ -68,12 +93,57 @@ impl Segment {
                 [centre[0] + radius * m.cos(), centre[1] + radius * m.sin()]
             }
             Segment::Circle { centre, radius } => [centre[0] + radius, centre[1]],
+            _ => self.point_at(0.5),
+        }
+    }
+
+    /// The point at fraction `u` ∈ [0, 1] along an ellipse or spline segment
+    /// (lines, arcs and circles: by parameter too).
+    pub fn point_at(&self, u: f64) -> [f64; 2] {
+        match self {
+            Segment::Line { a, b } => [a[0] + (b[0] - a[0]) * u, a[1] + (b[1] - a[1]) * u],
+            Segment::Arc {
+                centre,
+                radius,
+                start,
+                end,
+                ccw,
+            } => {
+                let (a0, sweep) = arc_angles(*centre, *start, *end, *ccw);
+                let t = a0 + sweep * u;
+                [centre[0] + radius * t.cos(), centre[1] + radius * t.sin()]
+            }
+            Segment::Circle { centre, radius } => {
+                let t = TAU * u;
+                [centre[0] + radius * t.cos(), centre[1] + radius * t.sin()]
+            }
+            Segment::Ellipse {
+                centre,
+                major,
+                minor,
+            } => ellipse_point(*centre, *major, *minor, TAU * u),
+            Segment::EllipseArc {
+                centre,
+                major,
+                minor,
+                t0,
+                t1,
+                ccw,
+            } => {
+                let sweep = ellipse_sweep(*t0, *t1, *ccw);
+                ellipse_point(*centre, *major, *minor, t0 + sweep * u)
+            }
+            Segment::Spline { data, reversed } => {
+                let (lo, hi) = spline_domain(data);
+                let u = if *reversed { 1.0 - u } else { u };
+                spline_point(data, lo + (hi - lo) * u)
+            }
         }
     }
 
     /// Points along the segment, excluding the end point.
     fn sample(&self, out: &mut Vec<[f64; 2]>) {
-        match *self {
+        match self.clone() {
             Segment::Line { a, .. } => out.push(a),
             Segment::Arc {
                 centre,
@@ -93,6 +163,12 @@ impl Segment {
                 for i in 0..ARC_SAMPLES * 2 {
                     let t = TAU * i as f64 / (ARC_SAMPLES * 2) as f64;
                     out.push([centre[0] + radius * t.cos(), centre[1] + radius * t.sin()]);
+                }
+            }
+            _ => {
+                let n = CURVE_SAMPLES;
+                for i in 0..n {
+                    out.push(self.point_at(i as f64 / n as f64));
                 }
             }
         }
@@ -254,6 +330,52 @@ fn traced_loops(sketch: &Sketch) -> Vec<(Loop, usize)> {
                     ));
                 }
             }
+            Geometry::EllipticalArc {
+                centre,
+                major,
+                minor_radius,
+                start,
+                end,
+            } => {
+                let (c, m) = (pos(centre), pos(major));
+                let mv = [m[0] - c[0], m[1] - c[1]];
+                if mv[0].hypot(mv[1]) > MERGE_TOL && minor_radius > MERGE_TOL {
+                    let t0 = ellipse_param(c, mv, minor_radius, pos(start));
+                    let t1 = ellipse_param(c, mv, minor_radius, pos(end));
+                    raw_edges.push((
+                        e.id,
+                        start,
+                        end,
+                        Segment::EllipseArc {
+                            centre: c,
+                            major: mv,
+                            minor: minor_radius,
+                            t0,
+                            t1,
+                            ccw: true,
+                        },
+                    ));
+                }
+            }
+            Geometry::Spline {
+                ref points,
+                closed: false,
+            } => {
+                if let Some(data) = sketch.spline(e.id) {
+                    let (a, b) = (points[0], points[points.len() - 1]);
+                    if dist(pos(a), pos(b)) > MERGE_TOL {
+                        raw_edges.push((
+                            e.id,
+                            a,
+                            b,
+                            Segment::Spline {
+                                data: data.clone(),
+                                reversed: false,
+                            },
+                        ));
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -288,11 +410,11 @@ fn traced_loops(sketch: &Sketch) -> Vec<(Loop, usize)> {
 
     let mut edges: Vec<Edge> = raw_edges
         .iter()
-        .map(|&(curve, s, t, forward)| Edge {
-            curve,
-            from: find(node_of[&s], &mut parent),
-            to: find(node_of[&t], &mut parent),
-            forward,
+        .map(|(curve, s, t, forward)| Edge {
+            curve: *curve,
+            from: find(node_of[s], &mut parent),
+            to: find(node_of[t], &mut parent),
+            forward: forward.clone(),
         })
         .filter(|e| e.from != e.to)
         .collect();
@@ -429,6 +551,40 @@ fn circle_loops(sketch: &Sketch) -> Vec<(Loop, usize)> {
         .iter()
         .filter(|e| !e.construction)
         .filter_map(|e| match e.geometry {
+            Geometry::Ellipse {
+                centre,
+                major,
+                minor_radius,
+            } => {
+                let (c, m) = (sketch.point(centre)?, sketch.point(major)?);
+                let mv = [m[0] - c[0], m[1] - c[1]];
+                let a = mv[0].hypot(mv[1]);
+                if a <= MERGE_TOL || minor_radius <= MERGE_TOL {
+                    return None;
+                }
+                let seg = Segment::Ellipse {
+                    centre: c,
+                    major: mv,
+                    minor: minor_radius,
+                };
+                closed_loop(seg, e.id, PI * a * minor_radius)
+            }
+            Geometry::Spline { closed: true, .. } => {
+                let seg = Segment::Spline {
+                    data: sketch.spline(e.id)?.clone(),
+                    reversed: false,
+                };
+                let mut outline = Vec::new();
+                seg.sample(&mut outline);
+                let area = signed_area(&outline);
+                // Walk closed splines counter-clockwise.
+                let seg = if area < 0.0 {
+                    oriented(&seg, true)
+                } else {
+                    seg
+                };
+                closed_loop(seg, e.id, area.abs())
+            }
             Geometry::Circle { centre, radius } if radius > MERGE_TOL => {
                 let centre = sketch.point(centre)?;
                 let seg = Segment::Circle { centre, radius };
@@ -450,13 +606,105 @@ fn circle_loops(sketch: &Sketch) -> Vec<(Loop, usize)> {
         .collect()
 }
 
+fn closed_loop(seg: Segment, curve: EntityId, area: f64) -> Option<(Loop, usize)> {
+    if area <= MIN_AREA {
+        return None;
+    }
+    let mut outline = Vec::new();
+    seg.sample(&mut outline);
+    Some((
+        Loop {
+            segments: vec![seg],
+            curves: vec![curve],
+            outline,
+            area,
+        },
+        usize::MAX - curve.0 as usize,
+    ))
+}
+
+// ---- Ellipses and splines ----------------------------------------------------
+
+fn ellipse_point(c: [f64; 2], major: [f64; 2], minor: f64, t: f64) -> [f64; 2] {
+    let a = major[0].hypot(major[1]);
+    let (ux, uy) = (major[0] / a, major[1] / a);
+    let (ct, st) = (t.cos(), t.sin());
+    [
+        c[0] + ct * major[0] - st * minor * uy,
+        c[1] + ct * major[1] + st * minor * ux,
+    ]
+}
+
+/// Parameter of a point on the ellipse (its eccentric angle).
+fn ellipse_param(c: [f64; 2], major: [f64; 2], minor: f64, p: [f64; 2]) -> f64 {
+    let a = major[0].hypot(major[1]);
+    let (ux, uy) = (major[0] / a, major[1] / a);
+    let (dx, dy) = (p[0] - c[0], p[1] - c[1]);
+    let (x, y) = (dx * ux + dy * uy, -dx * uy + dy * ux);
+    (y / minor).atan2(x / a)
+}
+
+fn ellipse_sweep(t0: f64, t1: f64, ccw: bool) -> f64 {
+    let mut sweep = (t1 - t0).rem_euclid(TAU);
+    if sweep < 1e-12 {
+        sweep = TAU;
+    }
+    if ccw {
+        sweep
+    } else {
+        sweep - TAU
+    }
+}
+
+pub(crate) fn spline_domain(d: &SplineData) -> (f64, f64) {
+    let n = d.control_points.len();
+    (d.knots[d.degree], d.knots[n])
+}
+
+/// De Boor evaluation of a (rational) B-spline.
+pub(crate) fn spline_point(d: &SplineData, t: f64) -> [f64; 2] {
+    let p = d.degree;
+    let n = d.control_points.len();
+    let (lo, hi) = spline_domain(d);
+    let t = t.clamp(lo, hi);
+    let mut k = p;
+    while k + 1 < n && d.knots[k + 1] <= t {
+        k += 1;
+    }
+    let w = |i: usize| d.weights.get(i).copied().unwrap_or(1.0);
+    let mut pts: Vec<[f64; 3]> = (0..=p)
+        .map(|j| {
+            let i = k - p + j;
+            let c = d.control_points[i];
+            [c[0] * w(i), c[1] * w(i), w(i)]
+        })
+        .collect();
+    for r in 1..=p {
+        for j in (r..=p).rev() {
+            let i = k - p + j;
+            let den = d.knots[i + p + 1 - r] - d.knots[i];
+            let a = if den.abs() < 1e-15 {
+                0.0
+            } else {
+                (t - d.knots[i]) / den
+            };
+            let prev = pts[j - 1];
+            for (c, v) in pts[j].iter_mut().enumerate() {
+                *v = (1.0 - a) * prev[c] + a * *v;
+            }
+        }
+    }
+    let q = pts[p];
+    [q[0] / q[2], q[1] / q[2]]
+}
+
 // ---- Geometry helpers --------------------------------------------------------
 
 fn oriented(seg: &Segment, reversed: bool) -> Segment {
     if !reversed {
-        return *seg;
+        return seg.clone();
     }
-    match *seg {
+    match seg.clone() {
         Segment::Line { a, b } => Segment::Line { a: b, b: a },
         Segment::Arc {
             centre,
@@ -471,14 +719,33 @@ fn oriented(seg: &Segment, reversed: bool) -> Segment {
             end: start,
             ccw: !ccw,
         },
-        circle => circle,
+        Segment::EllipseArc {
+            centre,
+            major,
+            minor,
+            t0,
+            t1,
+            ccw,
+        } => Segment::EllipseArc {
+            centre,
+            major,
+            minor,
+            t0: t1,
+            t1: t0,
+            ccw: !ccw,
+        },
+        Segment::Spline { data, reversed } => Segment::Spline {
+            data,
+            reversed: !reversed,
+        },
+        closed => closed,
     }
 }
 
 /// Direction leaving the segment's start (radians, [0, 2π)) and its signed
 /// curvature (left turn positive).
 fn leaving(seg: &Segment) -> (f64, f64) {
-    let (dx, dy, k) = match *seg {
+    let (dx, dy, k) = match seg.clone() {
         Segment::Line { a, b } => (b[0] - a[0], b[1] - a[1], 0.0),
         Segment::Arc {
             centre,
@@ -494,7 +761,19 @@ fn leaving(seg: &Segment) -> (f64, f64) {
                 (ry, -rx, -1.0 / radius)
             }
         }
-        Segment::Circle { .. } => (0.0, 1.0, 0.0),
+        Segment::Circle { .. } | Segment::Ellipse { .. } => (0.0, 1.0, 0.0),
+        _ => {
+            // Ellipse arcs and splines: direction from a short step along it,
+            // curvature from the turn over two steps (ties only).
+            let (p0, p1, p2) = (seg.point_at(0.0), seg.point_at(1e-4), seg.point_at(2e-4));
+            let (d1, d2) = (
+                [p1[0] - p0[0], p1[1] - p0[1]],
+                [p2[0] - p1[0], p2[1] - p1[1]],
+            );
+            let turn = (d1[0] * d2[1] - d1[1] * d2[0]).atan2(d1[0] * d2[0] + d1[1] * d2[1]);
+            let step = d1[0].hypot(d1[1]).max(1e-15);
+            (d1[0], d1[1], turn / step)
+        }
     };
     (dy.atan2(dx).rem_euclid(TAU), k)
 }
@@ -519,7 +798,7 @@ fn arc_angles(centre: [f64; 2], start: [f64; 2], end: [f64; 2], ccw: bool) -> (f
 fn exact_area(segments: &[Segment]) -> f64 {
     segments
         .iter()
-        .map(|s| match *s {
+        .map(|s| match s.clone() {
             Segment::Line { a, b } => (a[0] * b[1] - b[0] * a[1]) / 2.0,
             Segment::Arc {
                 centre,
@@ -534,11 +813,24 @@ fn exact_area(segments: &[Segment]) -> f64 {
                     / 2.0
             }
             Segment::Circle { radius, .. } => PI * radius * radius,
+            Segment::Ellipse { major, minor, .. } => PI * major[0].hypot(major[1]) * minor,
+            _ => {
+                // ½∮(x dy − y dx) along a fine polyline of the curve.
+                let n = 512;
+                (0..n)
+                    .map(|i| {
+                        let (p, q) = (
+                            s.point_at(i as f64 / n as f64),
+                            s.point_at((i + 1) as f64 / n as f64),
+                        );
+                        (p[0] * q[1] - q[0] * p[1]) / 2.0
+                    })
+                    .sum()
+            }
         })
         .sum()
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn signed_area(poly: &[[f64; 2]]) -> f64 {
     let n = poly.len();
     (0..n)

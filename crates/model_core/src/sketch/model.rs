@@ -5,10 +5,11 @@
 //! positions back. Ids are never reused, so dimensions, profiles and later
 //! features keep pointing at the right thing while the sketch is edited.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use super::plane::SketchPlane;
+pub use super::solver_adapter::SplineData;
 use super::solver_adapter::{
     ConstraintSolver, CurveRef, PointRef, Rule, RuleRef, SolveStatus, SolverError,
 };
@@ -21,7 +22,7 @@ pub struct EntityId(pub u64);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConstraintId(pub u64);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Geometry {
     Point {
         x: f64,
@@ -41,6 +42,25 @@ pub enum Geometry {
         start: EntityId,
         end: EntityId,
     },
+    /// Ellipse: `major` is the end point of the major axis.
+    Ellipse {
+        centre: EntityId,
+        major: EntityId,
+        minor_radius: f64,
+    },
+    /// Elliptical arc, counter-clockwise from `start` to `end`.
+    EllipticalArc {
+        centre: EntityId,
+        major: EntityId,
+        minor_radius: f64,
+        start: EntityId,
+        end: EntityId,
+    },
+    /// Cubic spline through its fit points (closed: periodic).
+    Spline {
+        points: Vec<EntityId>,
+        closed: bool,
+    },
 }
 
 impl Geometry {
@@ -50,21 +70,47 @@ impl Geometry {
             Geometry::Line { .. } => "line",
             Geometry::Circle { .. } => "circle",
             Geometry::Arc { .. } => "arc",
+            Geometry::Ellipse { .. } => "ellipse",
+            Geometry::EllipticalArc { .. } => "elliptical arc",
+            Geometry::Spline { .. } => "spline",
         }
     }
 
     /// Points this geometry is defined by.
     pub fn defining_points(&self) -> Vec<EntityId> {
-        match *self {
+        match self {
             Geometry::Point { .. } => vec![],
-            Geometry::Line { start, end } => vec![start, end],
-            Geometry::Circle { centre, .. } => vec![centre],
-            Geometry::Arc { centre, start, end } => vec![centre, start, end],
+            Geometry::Line { start, end } => vec![*start, *end],
+            Geometry::Circle { centre, .. } => vec![*centre],
+            Geometry::Arc { centre, start, end } => vec![*centre, *start, *end],
+            Geometry::Ellipse { centre, major, .. } => vec![*centre, *major],
+            Geometry::EllipticalArc {
+                centre,
+                major,
+                start,
+                end,
+                ..
+            } => vec![*centre, *major, *start, *end],
+            Geometry::Spline { points, .. } => points.clone(),
+        }
+    }
+
+    /// End points of an open curve (start, end), if it has them.
+    pub fn ends(&self) -> Option<(EntityId, EntityId)> {
+        match self {
+            Geometry::Line { start, end }
+            | Geometry::Arc { start, end, .. }
+            | Geometry::EllipticalArc { start, end, .. } => Some((*start, *end)),
+            Geometry::Spline {
+                points,
+                closed: false,
+            } if points.len() >= 2 => Some((points[0], points[points.len() - 1])),
+            _ => None,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Entity {
     pub id: EntityId,
     pub geometry: Geometry,
@@ -138,6 +184,46 @@ pub enum SketchConstraint {
         curve: EntityId,
         value: f64,
     },
+    /// Curvature continuity (G2) where a spline meets another curve.
+    Smooth(EntityId, EntityId),
+    /// Distance between two parallel lines.
+    LineDistance {
+        a: EntityId,
+        b: EntityId,
+        value: f64,
+    },
+    ArcLength {
+        arc: EntityId,
+        value: f64,
+    },
+    /// Gap between a point and the edge of a circle or arc.
+    PointCircleDistance {
+        point: EntityId,
+        circle: EntityId,
+        value: f64,
+        inside: bool,
+    },
+    /// Gap between a line and the edge of a circle or arc.
+    LineCircleDistance {
+        line: EntityId,
+        circle: EntityId,
+        value: f64,
+    },
+    /// Gap between the edges of two circles or arcs.
+    CircleDistance {
+        a: EntityId,
+        b: EntityId,
+        value: f64,
+        inside: bool,
+    },
+    MajorRadius {
+        ellipse: EntityId,
+        value: f64,
+    },
+    MinorRadius {
+        ellipse: EntityId,
+        value: f64,
+    },
 }
 
 impl SketchConstraint {
@@ -150,7 +236,10 @@ impl SketchConstraint {
             | Fix(a)
             | Length { line: a, .. }
             | Radius { curve: a, .. }
-            | Diameter { curve: a, .. } => vec![a],
+            | Diameter { curve: a, .. }
+            | ArcLength { arc: a, .. }
+            | MajorRadius { ellipse: a, .. }
+            | MinorRadius { ellipse: a, .. } => vec![a],
             Coincident(a, b)
             | HorizontalPoints(a, b)
             | VerticalPoints(a, b)
@@ -168,13 +257,29 @@ impl SketchConstraint {
             }
             | HorizontalDistance { a, b, .. }
             | VerticalDistance { a, b, .. }
-            | Angle { a, b, .. } => vec![a, b],
+            | Angle { a, b, .. }
+            | Smooth(a, b)
+            | LineDistance { a, b, .. }
+            | PointCircleDistance {
+                point: a,
+                circle: b,
+                ..
+            }
+            | LineCircleDistance {
+                line: a, circle: b, ..
+            }
+            | CircleDistance { a, b, .. } => vec![a, b],
             Symmetric { a, b, axis } => vec![a, b, axis],
         }
     }
 
     pub fn is_dimension(&self) -> bool {
         self.value().is_some()
+    }
+
+    /// Length-like dimensions (not angles): the ones that may scale a sketch.
+    pub fn is_length(&self) -> bool {
+        self.is_dimension() && !matches!(self, SketchConstraint::Angle { .. })
     }
 
     /// The driving value of a dimension (mm or radians).
@@ -188,7 +293,14 @@ impl SketchConstraint {
             | Length { value, .. }
             | Angle { value, .. }
             | Radius { value, .. }
-            | Diameter { value, .. } => Some(value),
+            | Diameter { value, .. }
+            | LineDistance { value, .. }
+            | ArcLength { value, .. }
+            | PointCircleDistance { value, .. }
+            | LineCircleDistance { value, .. }
+            | CircleDistance { value, .. }
+            | MajorRadius { value, .. }
+            | MinorRadius { value, .. } => Some(value),
             _ => None,
         }
     }
@@ -203,7 +315,14 @@ impl SketchConstraint {
             | Length { value, .. }
             | Angle { value, .. }
             | Radius { value, .. }
-            | Diameter { value, .. } => {
+            | Diameter { value, .. }
+            | LineDistance { value, .. }
+            | ArcLength { value, .. }
+            | PointCircleDistance { value, .. }
+            | LineCircleDistance { value, .. }
+            | CircleDistance { value, .. }
+            | MajorRadius { value, .. }
+            | MinorRadius { value, .. } => {
                 *value = v;
                 true
             }
@@ -224,6 +343,11 @@ pub enum SketchError {
     /// Refused: the constraint contradicts these existing ones.
     Conflicts(Vec<ConstraintId>),
     NotADimension(ConstraintId),
+    /// Refused: the other constraints already imply it (a dimension can be
+    /// added as a driven one instead).
+    Redundant,
+    /// Refused: solving it would shrink these curves to nothing.
+    Collapses(Vec<EntityId>),
 }
 
 impl fmt::Display for SketchError {
@@ -243,6 +367,24 @@ impl fmt::Display for SketchError {
                 )
             }
             SketchError::NotADimension(c) => write!(f, "constraint {} is not a dimension", c.0),
+            SketchError::Redundant => {
+                write!(
+                    f,
+                    "the other constraints already set this (it would be redundant)"
+                )
+            }
+            SketchError::Collapses(ids) => {
+                let n = ids.len();
+                write!(
+                    f,
+                    "that would shrink {} to nothing",
+                    if n == 1 {
+                        "a curve".to_string()
+                    } else {
+                        format!("{n} curves")
+                    }
+                )
+            }
         }
     }
 }
@@ -259,6 +401,8 @@ pub struct SolveSummary {
     pub fully_constrained: HashSet<EntityId>,
     pub conflicting: Vec<ConstraintId>,
     pub redundant: Vec<ConstraintId>,
+    /// Curves that collapsed (zero-length line, zero radius).
+    pub degenerate: Vec<EntityId>,
 }
 
 impl SolveSummary {
@@ -276,6 +420,10 @@ pub struct Sketch {
     pub plane: SketchPlane,
     entities: Vec<Entity>,
     constraints: Vec<(ConstraintId, SketchConstraint)>,
+    /// Dimensions that only measure (reference dimensions): not solved.
+    driven: BTreeSet<ConstraintId>,
+    /// Splines as last solved, for drawing and profiles.
+    splines: BTreeMap<EntityId, SplineData>,
     next_id: u64,
 }
 
@@ -286,6 +434,8 @@ impl Sketch {
             plane,
             entities: Vec::new(),
             constraints: Vec::new(),
+            driven: BTreeSet::new(),
+            splines: BTreeMap::new(),
             next_id: 1,
         }
     }
@@ -329,6 +479,40 @@ impl Sketch {
             }
             _ => None,
         }
+    }
+
+    /// Major and minor radius of an ellipse or elliptical arc.
+    pub fn ellipse_radii(&self, id: EntityId) -> Option<(f64, f64)> {
+        match &self.entity(id)?.geometry {
+            Geometry::Ellipse {
+                centre,
+                major,
+                minor_radius,
+            }
+            | Geometry::EllipticalArc {
+                centre,
+                major,
+                minor_radius,
+                ..
+            } => {
+                let (c, m) = (self.point(*centre)?, self.point(*major)?);
+                Some((
+                    ((m[0] - c[0]).powi(2) + (m[1] - c[1]).powi(2)).sqrt(),
+                    *minor_radius,
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    /// The spline's shape as last solved.
+    pub fn spline(&self, id: EntityId) -> Option<&SplineData> {
+        self.splines.get(&id)
+    }
+
+    /// True for a driven (reference) dimension, which follows the geometry.
+    pub fn is_driven(&self, id: ConstraintId) -> bool {
+        self.driven.contains(&id)
     }
 
     // ---- Geometry ----------------------------------------------------------
@@ -392,6 +576,76 @@ impl Sketch {
         Ok(self.push(Geometry::Arc { centre, start, end }))
     }
 
+    /// An ellipse from its centre, the end of its major axis and its minor radius.
+    pub fn add_ellipse(
+        &mut self,
+        centre: EntityId,
+        major: EntityId,
+        minor_radius: f64,
+    ) -> Result<EntityId, SketchError> {
+        self.require_point(centre)?;
+        self.require_point(major)?;
+        if centre == major || !positive(minor_radius, 0.0) {
+            return Err(SketchError::InvalidValue(
+                "an ellipse needs two positive radii".into(),
+            ));
+        }
+        Ok(self.push(Geometry::Ellipse {
+            centre,
+            major,
+            minor_radius,
+        }))
+    }
+
+    /// An elliptical arc, counter-clockwise from `start` to `end`.
+    pub fn add_elliptical_arc(
+        &mut self,
+        centre: EntityId,
+        major: EntityId,
+        minor_radius: f64,
+        start: EntityId,
+        end: EntityId,
+    ) -> Result<EntityId, SketchError> {
+        for p in [centre, major, start, end] {
+            self.require_point(p)?;
+        }
+        if centre == major || start == end || !positive(minor_radius, 0.0) {
+            return Err(SketchError::InvalidValue(
+                "an elliptical arc needs two radii and two different ends".into(),
+            ));
+        }
+        Ok(self.push(Geometry::EllipticalArc {
+            centre,
+            major,
+            minor_radius,
+            start,
+            end,
+        }))
+    }
+
+    /// A spline through fit points (at least two; three when closed).
+    pub fn add_spline(
+        &mut self,
+        points: &[EntityId],
+        closed: bool,
+    ) -> Result<EntityId, SketchError> {
+        for &p in points {
+            self.require_point(p)?;
+        }
+        let distinct: BTreeSet<EntityId> = points.iter().copied().collect();
+        if points.len() < 2 || (closed && points.len() < 3) || distinct.len() != points.len() {
+            return Err(SketchError::InvalidValue(
+                "a spline needs at least two different points (three when closed)".into(),
+            ));
+        }
+        let id = self.push(Geometry::Spline {
+            points: points.to_vec(),
+            closed,
+        });
+        self.solve(); // fills the spline's shape
+        Ok(id)
+    }
+
     /// A rectangle from two opposite corners, as the Rectangle tool draws it:
     /// four lines sharing corner points, with horizontal and vertical
     /// constraints. Returns the lines bottom, right, top, left.
@@ -444,7 +698,10 @@ impl Sketch {
     /// curve also removes its defining points when nothing else uses them; a
     /// point still used by a curve can't be removed.
     pub fn remove_entity(&mut self, id: EntityId) -> Result<(), SketchError> {
-        let entity = *self.entity(id).ok_or(SketchError::UnknownEntity(id))?;
+        let entity = self
+            .entity(id)
+            .ok_or(SketchError::UnknownEntity(id))?
+            .clone();
         if matches!(entity.geometry, Geometry::Point { .. })
             && self
                 .entities
@@ -453,8 +710,15 @@ impl Sketch {
         {
             return Err(SketchError::InUse(id));
         }
-        self.constraints
-            .retain(|(_, c)| !c.entities().contains(&id));
+        let driven = &mut self.driven;
+        self.constraints.retain(|(cid, c)| {
+            let keep = !c.entities().contains(&id);
+            if !keep {
+                driven.remove(cid);
+            }
+            keep
+        });
+        self.splines.remove(&id);
         self.entities.retain(|e| e.id != id);
         for p in entity.geometry.defining_points() {
             let used = self
@@ -475,25 +739,21 @@ impl Sketch {
     // ---- Constraints -------------------------------------------------------
 
     /// Adds a constraint the way the sketch UI does: refused with
-    /// [`SketchError::Conflicts`] if it would contradict existing ones.
-    /// On success the sketch is re-solved.
+    /// [`SketchError::Conflicts`] if it would contradict existing ones,
+    /// [`SketchError::Redundant`] if they already imply it, and
+    /// [`SketchError::Collapses`] if it would shrink a curve to nothing. The
+    /// first dimension of a sketch scales the whole sketch to it (as Fusion
+    /// does). On success the sketch is re-solved.
     pub fn add_constraint(
         &mut self,
         constraint: SketchConstraint,
     ) -> Result<ConstraintId, SketchError> {
         self.validate(&constraint)?;
+        let constraint = self.with_sides(constraint);
         let saved = self.entities.clone();
         self.pre_orient(&constraint);
-        let result = (|| {
-            let mut built = self.build_solver_with_constraints()?;
-            built.solver.solve();
-            let rule = built.rule(&constraint)?;
-            match built.solver.try_add(rule).map_err(solver_error)? {
-                Ok(_) => Ok(()),
-                Err(conflicts) => Err(SketchError::Conflicts(built.constraint_ids(&conflicts))),
-            }
-        })();
-        match result {
+        self.scale_for_first_dimension(&constraint);
+        match self.check_add(&constraint) {
             Ok(()) => {
                 // The id is only taken once accepted: a refusal leaves no trace.
                 let id = ConstraintId(self.take_id());
@@ -504,6 +764,274 @@ impl Sketch {
             Err(e) => {
                 self.entities = saved;
                 Err(e)
+            }
+        }
+    }
+
+    /// Adds a dimension that only measures (a reference dimension): it follows
+    /// the geometry and is never refused.
+    pub fn add_driven(
+        &mut self,
+        constraint: SketchConstraint,
+    ) -> Result<ConstraintId, SketchError> {
+        self.validate_entities(&constraint)?;
+        if !constraint.is_dimension() {
+            return Err(SketchError::NotADimension(ConstraintId(0)));
+        }
+        let mut constraint = self.with_sides(constraint);
+        if let Some(v) = self.measure(&constraint) {
+            constraint.set_value(v);
+        }
+        let id = ConstraintId(self.take_id());
+        self.constraints.push((id, constraint));
+        self.driven.insert(id);
+        Ok(id)
+    }
+
+    /// Switches a dimension between driving and driven. Making it driving is
+    /// checked like adding it.
+    pub fn set_driven(&mut self, id: ConstraintId, driven: bool) -> Result<(), SketchError> {
+        let c = *self
+            .constraint(id)
+            .ok_or(SketchError::UnknownConstraint(id))?;
+        if !c.is_dimension() {
+            return Err(SketchError::NotADimension(id));
+        }
+        if driven {
+            self.driven.insert(id);
+            self.solve();
+            return Ok(());
+        }
+        if !self.driven.contains(&id) {
+            return Ok(());
+        }
+        let saved = self.entities.clone();
+        let pos = self
+            .constraints
+            .iter()
+            .position(|(c, _)| *c == id)
+            .expect("present");
+        let entry = self.constraints.remove(pos);
+        self.driven.remove(&id);
+        let result = self.check_add(&entry.1);
+        self.constraints.insert(pos, entry);
+        if let Err(e) = result {
+            self.driven.insert(id);
+            self.entities = saved;
+            return Err(e);
+        }
+        self.solve();
+        Ok(())
+    }
+
+    /// Would `constraint` be accepted? (Leaves the sketch as it was.)
+    fn check_add(&self, constraint: &SketchConstraint) -> Result<(), SketchError> {
+        let mut built = self.build_solver_with_constraints()?;
+        let before = built.solver.solve();
+        let rule = built.rule(constraint)?;
+        match built.solver.try_add(rule).map_err(solver_error)? {
+            Ok(r) => {
+                let after = built.solver.solve();
+                let collapsed: Vec<CurveRef> = after
+                    .degenerate
+                    .iter()
+                    .filter(|c| !before.degenerate.contains(c))
+                    .copied()
+                    .collect();
+                if !collapsed.is_empty() {
+                    return Err(SketchError::Collapses(built.entity_ids(&collapsed)));
+                }
+                if built.solver.analyze().redundant.contains(&r) {
+                    return Err(SketchError::Redundant);
+                }
+                Ok(())
+            }
+            Err(conflicts) => Err(SketchError::Conflicts(built.constraint_ids(&conflicts))),
+        }
+    }
+
+    /// Fills in which side a gap dimension measures from the geometry now.
+    fn with_sides(&self, c: SketchConstraint) -> SketchConstraint {
+        match c {
+            SketchConstraint::PointCircleDistance {
+                point,
+                circle,
+                value,
+                ..
+            } => {
+                let inside = match (
+                    self.point(point),
+                    self.centre_of(circle),
+                    self.radius(circle),
+                ) {
+                    (Some(p), Some(cc), Some(r)) => dist2(p, cc) < r,
+                    _ => false,
+                };
+                SketchConstraint::PointCircleDistance {
+                    point,
+                    circle,
+                    value,
+                    inside,
+                }
+            }
+            SketchConstraint::CircleDistance { a, b, value, .. } => {
+                let inside = match (
+                    self.centre_of(a),
+                    self.centre_of(b),
+                    self.radius(a),
+                    self.radius(b),
+                ) {
+                    (Some(ca), Some(cb), Some(ra), Some(rb)) => dist2(ca, cb) < (ra - rb).abs(),
+                    _ => false,
+                };
+                SketchConstraint::CircleDistance {
+                    a,
+                    b,
+                    value,
+                    inside,
+                }
+            }
+            other => other,
+        }
+    }
+
+    fn centre_of(&self, id: EntityId) -> Option<[f64; 2]> {
+        match &self.entity(id)?.geometry {
+            Geometry::Circle { centre, .. }
+            | Geometry::Arc { centre, .. }
+            | Geometry::Ellipse { centre, .. }
+            | Geometry::EllipticalArc { centre, .. } => self.point(*centre),
+            _ => None,
+        }
+    }
+
+    fn line_ends(&self, id: EntityId) -> Option<([f64; 2], [f64; 2])> {
+        match &self.entity(id)?.geometry {
+            Geometry::Line { start, end } => Some((self.point(*start)?, self.point(*end)?)),
+            _ => None,
+        }
+    }
+
+    /// What a dimension measures in the geometry now (mm or radians).
+    pub fn measure(&self, c: &SketchConstraint) -> Option<f64> {
+        use SketchConstraint as S;
+        let point_line = |p: [f64; 2], (a, b): ([f64; 2], [f64; 2])| {
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let len = dx.hypot(dy);
+            (len > 0.0).then(|| ((p[0] - a[0]) * dy - (p[1] - a[1]) * dx).abs() / len)
+        };
+        match *c {
+            S::Distance { a, b, .. } => Some(dist2(self.point(a)?, self.point(b)?)),
+            S::HorizontalDistance { a, b, .. } => {
+                Some((self.point(b)?[0] - self.point(a)?[0]).abs())
+            }
+            S::VerticalDistance { a, b, .. } => Some((self.point(b)?[1] - self.point(a)?[1]).abs()),
+            S::PointLineDistance { point, line, .. } => {
+                point_line(self.point(point)?, self.line_ends(line)?)
+            }
+            S::Length { line, .. } => {
+                let (a, b) = self.line_ends(line)?;
+                Some(dist2(a, b))
+            }
+            S::Angle { a, b, .. } => {
+                let ((a0, a1), (b0, b1)) = (self.line_ends(a)?, self.line_ends(b)?);
+                let t1 = (a1[1] - a0[1]).atan2(a1[0] - a0[0]);
+                let t2 = (b1[1] - b0[1]).atan2(b1[0] - b0[0]);
+                let mut d = (t2 - t1).abs() % std::f64::consts::TAU;
+                if d > std::f64::consts::PI {
+                    d = std::f64::consts::TAU - d;
+                }
+                Some(d)
+            }
+            S::Radius { curve, .. } => self.radius(curve),
+            S::Diameter { curve, .. } => Some(2.0 * self.radius(curve)?),
+            S::LineDistance { a, b, .. } => {
+                let (b0, b1) = self.line_ends(b)?;
+                point_line(
+                    [(b0[0] + b1[0]) / 2.0, (b0[1] + b1[1]) / 2.0],
+                    self.line_ends(a)?,
+                )
+            }
+            S::ArcLength { arc, .. } => match self.entity(arc)?.geometry {
+                Geometry::Arc { centre, start, end } => {
+                    let (c, s, e) = (self.point(centre)?, self.point(start)?, self.point(end)?);
+                    let a0 = (s[1] - c[1]).atan2(s[0] - c[0]);
+                    let a1 = (e[1] - c[1]).atan2(e[0] - c[0]);
+                    Some(dist2(c, s) * (a1 - a0).rem_euclid(std::f64::consts::TAU))
+                }
+                _ => None,
+            },
+            S::PointCircleDistance {
+                point,
+                circle,
+                inside,
+                ..
+            } => {
+                let d = dist2(self.point(point)?, self.centre_of(circle)?);
+                let r = self.radius(circle)?;
+                Some(if inside { r - d } else { d - r })
+            }
+            S::LineCircleDistance { line, circle, .. } => Some(
+                point_line(self.centre_of(circle)?, self.line_ends(line)?)?
+                    - self.radius(circle)?,
+            ),
+            S::CircleDistance { a, b, inside, .. } => {
+                let d = dist2(self.centre_of(a)?, self.centre_of(b)?);
+                let (ra, rb) = (self.radius(a)?, self.radius(b)?);
+                Some(if inside {
+                    ra.max(rb) - ra.min(rb) - d
+                } else {
+                    d - ra - rb
+                })
+            }
+            S::MajorRadius { ellipse, .. } => Some(self.ellipse_radii(ellipse)?.0),
+            S::MinorRadius { ellipse, .. } => Some(self.ellipse_radii(ellipse)?.1),
+            _ => None,
+        }
+    }
+
+    /// The first dimension of a sketch scales everything to it, about the
+    /// sketch origin, so a rough sketch keeps its proportions (Fusion's
+    /// behaviour). Skipped once any dimension drives the sketch, or when a
+    /// point is fixed away from the origin.
+    fn scale_for_first_dimension(&mut self, c: &SketchConstraint) {
+        if !c.is_length() {
+            return;
+        }
+        let has_dimension = self
+            .constraints
+            .iter()
+            .any(|(id, k)| k.is_dimension() && !self.driven.contains(id));
+        let fixed_elsewhere = self.constraints.iter().any(|(_, k)| match *k {
+            SketchConstraint::Fix(p) => match self.point(p) {
+                Some(xy) => xy[0].abs() > 1e-9 || xy[1].abs() > 1e-9,
+                None => true, // a fixed curve
+            },
+            _ => false,
+        });
+        if has_dimension || fixed_elsewhere {
+            return;
+        }
+        let (Some(now), Some(target)) = (self.measure(c), c.value()) else {
+            return;
+        };
+        if !positive(now, 1e-9) {
+            return;
+        }
+        let f = target / now;
+        if !f.is_finite() || (f - 1.0).abs() < 1e-9 || !(1e-3..=1e3).contains(&f) {
+            return;
+        }
+        for e in &mut self.entities {
+            match &mut e.geometry {
+                Geometry::Point { x, y } => {
+                    *x *= f;
+                    *y *= f;
+                }
+                Geometry::Circle { radius, .. } => *radius *= f,
+                Geometry::Ellipse { minor_radius, .. }
+                | Geometry::EllipticalArc { minor_radius, .. } => *minor_radius *= f,
+                _ => {}
             }
         }
     }
@@ -519,7 +1047,7 @@ impl Sketch {
             SketchConstraint::Perpendicular(a, b) => (a, b, true),
             _ => return,
         };
-        let ends = |s: &Self, id: EntityId| match s.entity(id).map(|e| e.geometry) {
+        let ends = |s: &Self, id: EntityId| match s.entity(id).map(|e| e.geometry.clone()) {
             Some(Geometry::Line { start, end }) => Some((start, end)),
             _ => None,
         };
@@ -596,38 +1124,138 @@ impl Sketch {
     }
 
     /// Changes a dimension and re-solves. Restores the old value if the
-    /// sketch can't be solved with the new one.
+    /// sketch can't be solved with the new one, or if it would collapse a
+    /// curve. Large changes are made in steps (continuation), so shapes keep
+    /// their orientation instead of folding into a mirrored solution.
     pub fn set_dimension(
         &mut self,
         id: ConstraintId,
         value: f64,
     ) -> Result<SolveSummary, SketchError> {
-        let slot = self
-            .constraints
-            .iter_mut()
-            .find(|(c, _)| *c == id)
+        let constraint = *self
+            .constraint(id)
             .ok_or(SketchError::UnknownConstraint(id))?;
-        let old = slot.1.value().ok_or(SketchError::NotADimension(id))?;
-        if !value.is_finite() || (value <= 0.0 && !matches!(slot.1, SketchConstraint::Angle { .. }))
-        {
+        let old = constraint.value().ok_or(SketchError::NotADimension(id))?;
+        if self.driven.contains(&id) {
+            return Err(SketchError::InvalidValue(
+                "a driven dimension follows the geometry; make it driving to change it".into(),
+            ));
+        }
+        let angle = matches!(constraint, SketchConstraint::Angle { .. });
+        if !value.is_finite() || (value <= 0.0 && !angle) {
             return Err(SketchError::InvalidValue(
                 "dimensions must be positive".into(),
             ));
         }
-        slot.1.set_value(value);
-        let saved = self.entities.clone();
-        let summary = self.solve();
-        if !summary.is_solved() {
-            let slot = self
-                .constraints
-                .iter_mut()
-                .find(|(c, _)| *c == id)
-                .expect("still present");
-            slot.1.set_value(old);
-            self.entities = saved;
-            self.solve();
+        let saved_entities = self.entities.clone();
+        let before = self.solve();
+        let shape = self.orientation();
+
+        let attempt = |sketch: &mut Self, steps: usize| -> Option<SolveSummary> {
+            let mut last = None;
+            for k in 1..=steps {
+                let t = k as f64 / steps as f64;
+                // Lengths step geometrically (scale-like), angles linearly.
+                let v = if angle || old <= 0.0 {
+                    old + (value - old) * t
+                } else {
+                    old * (value / old).powf(t)
+                };
+                sketch.set_value_of(id, if k == steps { value } else { v });
+                let summary = sketch.solve();
+                if !summary.is_solved() {
+                    return None;
+                }
+                last = Some(summary);
+            }
+            last
+        };
+
+        let ratio = if angle {
+            1.0
+        } else {
+            (value / old).max(old / value)
+        };
+        let swing = if angle { (value - old).abs() } else { 0.0 };
+        let mut steps = if ratio > 1.25 || swing > 0.35 { 8 } else { 1 };
+        let mut result = attempt(self, steps);
+        if result.is_some() && steps > 1 && self.orientation() != shape {
+            // Still folded over: retry from the start with finer steps.
+            self.entities = saved_entities.clone();
+            self.set_value_of(id, old);
+            steps = 32;
+            result = attempt(self, steps);
         }
-        Ok(summary)
+        let collapsed = result
+            .as_ref()
+            .is_some_and(|r| r.degenerate.iter().any(|e| !before.degenerate.contains(e)));
+        match result {
+            Some(summary) if !collapsed => Ok(summary),
+            Some(summary) => {
+                self.set_value_of(id, old);
+                self.entities = saved_entities;
+                self.solve();
+                let _ = summary;
+                Err(SketchError::Collapses(vec![]))
+            }
+            None => {
+                self.set_value_of(id, old);
+                self.entities = saved_entities;
+                let mut s = self.solve();
+                s.status = SolveStatus::NotConverged;
+                Ok(s)
+            }
+        }
+    }
+
+    fn set_value_of(&mut self, id: ConstraintId, v: f64) {
+        if let Some(slot) = self.constraints.iter_mut().find(|(c, _)| *c == id) {
+            slot.1.set_value(v);
+        }
+    }
+
+    /// Which way each corner turns (sign of the cross product where two
+    /// lines meet): changes when a shape folds into its mirror image.
+    fn orientation(&self) -> Vec<i8> {
+        let lines: Vec<(EntityId, EntityId)> = self
+            .entities
+            .iter()
+            .filter_map(|e| match e.geometry {
+                Geometry::Line { start, end } => Some((start, end)),
+                _ => None,
+            })
+            .collect();
+        let mut signs = Vec::new();
+        for (i, &(a0, a1)) in lines.iter().enumerate() {
+            for &(b0, b1) in &lines[i + 1..] {
+                let shared = [
+                    (a1, b0, a0, b1),
+                    (a0, b0, a1, b1),
+                    (a1, b1, a0, b0),
+                    (a0, b1, a1, b0),
+                ]
+                .into_iter()
+                .find(|(p, q, _, _)| p == q);
+                let Some((corner, _, from, to)) = shared else {
+                    continue;
+                };
+                let (Some(c), Some(f), Some(t)) =
+                    (self.point(corner), self.point(from), self.point(to))
+                else {
+                    continue;
+                };
+                let cross = (c[0] - f[0]) * (t[1] - c[1]) - (c[1] - f[1]) * (t[0] - c[0]);
+                let scale = dist2(c, f) * dist2(t, c);
+                signs.push(if cross.abs() <= 1e-6 * scale.max(1e-12) {
+                    0
+                } else if cross > 0.0 {
+                    1
+                } else {
+                    -1
+                });
+            }
+        }
+        signs
     }
 
     // ---- Solving -----------------------------------------------------------
@@ -641,11 +1269,12 @@ impl Sketch {
                 fully_constrained: HashSet::new(),
                 conflicting: vec![],
                 redundant: vec![],
+                degenerate: vec![],
             };
         };
         let report = built.solver.solve();
         self.write_back(&built);
-        built.summary(report.status)
+        built.summary(report.status, &report.degenerate)
     }
 
     /// Drags a point toward `target` while every constraint keeps holding.
@@ -656,13 +1285,20 @@ impl Sketch {
     ) -> Result<SolveSummary, SketchError> {
         self.require_point(id)?;
         let mut built = self.build_solver_with_constraints()?;
-        built.solver.solve();
+        let before = built.solver.solve();
         let report = built
             .solver
             .drag_point(built.points[&id], target)
             .map_err(solver_error)?;
-        self.write_back(&built);
-        Ok(built.summary(report.status))
+        // Never drag a curve down to nothing: stop at the last good position.
+        let collapsed = report
+            .degenerate
+            .iter()
+            .any(|c| !before.degenerate.contains(c));
+        if !collapsed {
+            self.write_back(&built);
+        }
+        Ok(built.summary(report.status, &report.degenerate))
     }
 
     // ---- Internals ---------------------------------------------------------
@@ -698,12 +1334,17 @@ impl Sketch {
         }
     }
 
-    fn validate(&self, c: &SketchConstraint) -> Result<(), SketchError> {
+    fn validate_entities(&self, c: &SketchConstraint) -> Result<(), SketchError> {
         for e in c.entities() {
             if self.entity(e).is_none() {
                 return Err(SketchError::UnknownEntity(e));
             }
         }
+        Ok(())
+    }
+
+    fn validate(&self, c: &SketchConstraint) -> Result<(), SketchError> {
+        self.validate_entities(c)?;
         if let Some(v) = c.value() {
             let angle = matches!(c, SketchConstraint::Angle { .. });
             if !v.is_finite() || (!angle && v <= 0.0) {
@@ -735,6 +1376,30 @@ impl Sketch {
                     b.solver
                         .add_arc(b.points[&centre], b.points[&start], b.points[&end])
                 }
+                Geometry::Ellipse {
+                    centre,
+                    major,
+                    minor_radius,
+                } => b
+                    .solver
+                    .add_ellipse(b.points[&centre], b.points[&major], minor_radius),
+                Geometry::EllipticalArc {
+                    centre,
+                    major,
+                    minor_radius,
+                    start,
+                    end,
+                } => b.solver.add_elliptical_arc(
+                    b.points[&centre],
+                    b.points[&major],
+                    minor_radius,
+                    b.points[&start],
+                    b.points[&end],
+                ),
+                Geometry::Spline { ref points, closed } => {
+                    let refs: Vec<PointRef> = points.iter().map(|p| b.points[p]).collect();
+                    b.solver.add_spline(&refs, closed)
+                }
             }
             .map_err(solver_error)?;
             b.curves.insert(e.id, curve);
@@ -745,6 +1410,9 @@ impl Sketch {
     fn build_solver_with_constraints(&self) -> Result<Built, SketchError> {
         let mut b = self.build_solver()?;
         for (id, c) in &self.constraints {
+            if self.driven.contains(id) {
+                continue; // driven dimensions only measure
+            }
             let rule = b.rule(c)?;
             let r = b.solver.add(rule).map_err(solver_error)?;
             b.rules.push((r, *id));
@@ -765,7 +1433,31 @@ impl Sketch {
                         *radius = r;
                     }
                 }
+                Geometry::Ellipse { minor_radius, .. }
+                | Geometry::EllipticalArc { minor_radius, .. } => {
+                    if let Some(r) = b.curves.get(&e.id).and_then(|&c| b.solver.minor_radius(c)) {
+                        *minor_radius = r;
+                    }
+                }
                 _ => {}
+            }
+        }
+        self.splines.clear();
+        for e in &self.entities {
+            if matches!(e.geometry, Geometry::Spline { .. }) {
+                if let Some(data) = b.curves.get(&e.id).and_then(|&c| b.solver.spline(c)) {
+                    self.splines.insert(e.id, data);
+                }
+            }
+        }
+        // Driven dimensions show what the geometry measures now.
+        let driven: Vec<ConstraintId> = self.driven.iter().copied().collect();
+        for id in driven {
+            let Some(c) = self.constraint(id).copied() else {
+                continue;
+            };
+            if let Some(v) = self.measure(&c) {
+                self.set_value_of(id, v);
             }
         }
     }
@@ -789,9 +1481,10 @@ impl Built {
     }
 
     fn c(&self, id: EntityId) -> Result<CurveRef, SketchError> {
-        self.curves.get(&id).copied().ok_or_else(|| {
-            SketchError::WrongKind(format!("entity {} must be a line, circle or arc", id.0))
-        })
+        self.curves
+            .get(&id)
+            .copied()
+            .ok_or_else(|| SketchError::WrongKind(format!("entity {} must be a curve", id.0)))
     }
 
     fn rule(&self, c: &SketchConstraint) -> Result<Rule, SketchError> {
@@ -807,14 +1500,24 @@ impl Built {
             S::Perpendicular(a, b) => Rule::Perpendicular(self.c(a)?, self.c(b)?),
             S::Tangent(a, b) => Rule::Tangent(self.c(a)?, self.c(b)?),
             S::Equal(a, b) => Rule::Equal(self.c(a)?, self.c(b)?),
-            S::Fix(p) => Rule::Fix(self.p(p)?),
+            S::Fix(e) => match self.points.get(&e) {
+                Some(&p) => Rule::Fix(p),
+                None => Rule::FixCurve(self.c(e)?),
+            },
             S::Midpoint { point, line } => Rule::Midpoint(self.p(point)?, self.c(line)?),
             S::Concentric(a, b) => Rule::Concentric(self.c(a)?, self.c(b)?),
             S::Collinear(a, b) => Rule::Collinear(self.c(a)?, self.c(b)?),
-            S::Symmetric { a, b, axis } => Rule::Symmetric {
-                a: self.p(a)?,
-                b: self.p(b)?,
-                axis: self.c(axis)?,
+            S::Symmetric { a, b, axis } => match (self.points.get(&a), self.points.get(&b)) {
+                (Some(&pa), Some(&pb)) => Rule::Symmetric {
+                    a: pa,
+                    b: pb,
+                    axis: self.c(axis)?,
+                },
+                _ => Rule::SymmetricCurves {
+                    a: self.c(a)?,
+                    b: self.c(b)?,
+                    axis: self.c(axis)?,
+                },
             },
             S::Distance { a, b, value } => Rule::Distance {
                 a: self.p(a)?,
@@ -853,6 +1556,55 @@ impl Built {
                 curve: self.c(curve)?,
                 value,
             },
+            S::Smooth(a, b) => Rule::Smooth(self.c(a)?, self.c(b)?),
+            S::LineDistance { a, b, value } => Rule::LineDistance {
+                a: self.c(a)?,
+                b: self.c(b)?,
+                value,
+            },
+            S::ArcLength { arc, value } => Rule::ArcLength {
+                arc: self.c(arc)?,
+                value,
+            },
+            S::PointCircleDistance {
+                point,
+                circle,
+                value,
+                inside,
+            } => Rule::PointCircleDistance {
+                point: self.p(point)?,
+                circle: self.c(circle)?,
+                value,
+                inside,
+            },
+            S::LineCircleDistance {
+                line,
+                circle,
+                value,
+            } => Rule::LineCircleDistance {
+                line: self.c(line)?,
+                circle: self.c(circle)?,
+                value,
+            },
+            S::CircleDistance {
+                a,
+                b,
+                value,
+                inside,
+            } => Rule::CircleDistance {
+                a: self.c(a)?,
+                b: self.c(b)?,
+                value,
+                inside,
+            },
+            S::MajorRadius { ellipse, value } => Rule::MajorRadius {
+                ellipse: self.c(ellipse)?,
+                value,
+            },
+            S::MinorRadius { ellipse, value } => Rule::MinorRadius {
+                ellipse: self.c(ellipse)?,
+                value,
+            },
         })
     }
 
@@ -866,7 +1618,18 @@ impl Built {
         ids
     }
 
-    fn summary(&mut self, status: SolveStatus) -> SolveSummary {
+    fn entity_ids(&self, curves: &[CurveRef]) -> Vec<EntityId> {
+        let mut ids: Vec<EntityId> = self
+            .curves
+            .iter()
+            .filter(|(_, c)| curves.contains(c))
+            .map(|(id, _)| *id)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    fn summary(&mut self, status: SolveStatus, degenerate: &[CurveRef]) -> SolveSummary {
         let freedom = self.solver.analyze();
         let mut fully = HashSet::new();
         for (id, p) in &self.points {
@@ -885,8 +1648,18 @@ impl Built {
             fully_constrained: fully,
             conflicting: self.constraint_ids(&freedom.conflicting),
             redundant: self.constraint_ids(&freedom.redundant),
+            degenerate: self.entity_ids(degenerate),
         }
     }
+}
+
+/// `x > min`, false for NaN.
+pub(crate) fn positive(x: f64, min: f64) -> bool {
+    x > min
+}
+
+fn dist2(a: [f64; 2], b: [f64; 2]) -> f64 {
+    (a[0] - b[0]).hypot(a[1] - b[1])
 }
 
 fn solver_error(e: SolverError) -> SketchError {
@@ -898,6 +1671,10 @@ fn solver_error(e: SolverError) -> SketchError {
         other => SketchError::InvalidValue(other.to_string()),
     }
 }
+
+#[path = "ops.rs"]
+mod ops;
+pub use ops::Transform;
 
 #[cfg(test)]
 #[path = "model_tests.rs"]
