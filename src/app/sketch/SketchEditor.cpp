@@ -330,10 +330,10 @@ bool dimShape(K kind, const DimRef& a, const DimRef& b, double upp, const double
       const V2 u = unitOr(l - c, {1, 0});
       const V2 edge = c + u * r;
       if (kind == K::Diameter) {
-        const V2 far = c - u * r;
-        d.lines.push_back(seg(far, edge));
+        const V2 opposite = c - u * r;
+        d.lines.push_back(seg(opposite, edge));
         arrow(d, edge, u, upp);
-        arrow(d, far, u * -1.0, upp);
+        arrow(d, opposite, u * -1.0, upp);
       } else {
         d.lines.push_back(seg(c, edge));
         arrow(d, edge, u, upp);
